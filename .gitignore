@@ -1,6 +1,5 @@
-# Rust
+# Rust (Cargo.lock is committed: CI pins wasm-bindgen-cli to it)
 target/
-Cargo.lock
 
 # Gradle
 .gradle/
