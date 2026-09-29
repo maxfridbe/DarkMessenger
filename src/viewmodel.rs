@@ -32,7 +32,7 @@ impl Plugin for ViewModelPlugin {
 const HANDS_OFFSET: Vec3 = Vec3::new(0.0, -9.0, -14.0);
 const HANDS_SCALE: f32 = 0.35;
 const HANDS_ROTATION_Y: f32 = 0.0;
-/// The dagger hovers point-up above the open palms.
+/// The dagger hovers above the open palms, point away from the viewer.
 const DAGGER_OFFSET: Vec3 = Vec3::new(0.0, -7.5, -18.0);
 const DAGGER_SCALE: f32 = 0.7;
 /// Thrown, the dagger grows to a readable size in the world.
@@ -197,10 +197,10 @@ fn move_dagger(
             dagger.spin += rate * dt;
             transform.translation = home;
             transform.scale = Vec3::splat(DAGGER_SCALE);
-            // The blade runs along +Z in the model: stand it point-up and
-            // turn it about the camera's vertical axis.
+            // The point is +Z in the model; aim it down the camera's view
+            // (-Z) and turn the blade about its length.
             transform.rotation =
-                camera.rotation * Quat::from_rotation_y(dagger.spin) * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+                camera.rotation * Quat::from_rotation_y(std::f32::consts::PI) * Quat::from_rotation_z(dagger.spin);
         }
         DaggerState::Flying { direction, travelled } if playing => {
             let step = THROW_SPEED * dt;
@@ -229,8 +229,8 @@ fn move_dagger(
             dagger.spin += 22.0 * dt;
             let grow = ((travelled + step) / 150.0).min(1.0);
             transform.scale = Vec3::splat(DAGGER_SCALE + (DAGGER_FLIGHT_SCALE - DAGGER_SCALE) * grow);
-            // Tumbles end over end along its path.
-            transform.rotation = Quat::from_rotation_arc(Vec3::Z, direction) * Quat::from_rotation_x(dagger.spin);
+            // Point first, spinning about the blade.
+            transform.rotation = Quat::from_rotation_arc(Vec3::Z, direction) * Quat::from_rotation_z(dagger.spin);
         }
         DaggerState::Returning if playing => {
             // Drifts home through walls, turning lazily, shrinking back.
