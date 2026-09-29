@@ -3,11 +3,12 @@
 # build of 29 Sep 2026, 26.0929.02 the second.
 #
 #   ./increment_version.sh             next version for today -> write it everywhere
-#   ./increment_version.sh --next      only print the next version
+#   ./increment_version.sh --next      only print the next unpublished version
 #   ./increment_version.sh --apply V   write version V everywhere (used by CI)
 #
-# "Next" is one past the highest ## already used today, looking at git tags
-# (v26.0929.NN) and version.txt. CI runs this on every push to main, so each
+# "Next" is one past the highest ## already published today (git tags
+# v26.0929.NN); a plain local run also counts version.txt so repeated local
+# runs keep going up. CI runs --next on every push to main, so each
 # push publishes a new GitHub Release tagged v<version>; nothing needs to be
 # committed. Locally it just keeps your builds labelled.
 #
@@ -24,11 +25,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# $1 = "tags" to count only published tags (CI), anything else also counts
+# the local version.txt so repeated local runs keep incrementing.
 next_version() {
-    local today max=0 n
+    local today max=0 n local_v=""
     today="$(date -u +%y.%m%d)"
-    for n in $(git tag -l "v$today.*" 2>/dev/null | sed "s/^v$today\.//") \
-             $(sed -n "s/^$today\.//p" version.txt 2>/dev/null); do
+    [ "${1:-}" = tags ] || local_v="$(sed -n "s/^$today\.//p" version.txt 2>/dev/null)"
+    for n in $(git tag -l "v$today.*" 2>/dev/null | sed "s/^v$today\.//") $local_v; do
         [[ "$n" =~ ^[0-9]+$ ]] && (( 10#$n > max )) && max=$((10#$n))
     done
     printf '%s.%02d\n' "$today" $((max + 1))
@@ -51,7 +54,7 @@ apply_version() {
 }
 
 case "${1:-}" in
-    --next) next_version ;;
+    --next) next_version tags ;;
     --apply) apply_version "${2:?usage: $0 --apply YY.MMDD.##}" ;;
     "") apply_version "$(next_version)" ;;
     *) echo "usage: $0 [--next | --apply YY.MMDD.##]" >&2; exit 1 ;;
