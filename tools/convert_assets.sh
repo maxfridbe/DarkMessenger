@@ -1,18 +1,22 @@
 #!/bin/bash
 # Regenerates assets/ from the original 2003 DarkBASIC Pro project.
 #
-#   tools/convert_assets.sh [path/to/original/Dark Messenger]
+#   tools/convert_assets.sh [path/to/original/Dark Messenger] [path/to/playable demo]
 #
 # Models (.x) go through tools/xconv into .glb, lightmaps and lightning
-# frames (.bmp) become .png, the ambient wind track becomes .ogg and sound effects 16-bit .wav. The
-# converted files are committed, so this only needs to run when the
+# frames (.bmp) become .png, the ambient wind track becomes .ogg and sound
+# effects 16-bit .wav. The first-person hands and dagger only exist in the
+# later "Dark Messenger Playable Demo" build (Dec 2003), the second source.
+# The converted files are committed, so this only needs to run when the
 # conversion itself changes.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${1:-$ROOT/../Dark MessengerFrozen/Dark Messenger}"
+DEMO="${2:-$HOME/Downloads/Dark Messenger Playable Demo}"
 OUT="$ROOT/assets"
 [ -f "$SRC/Dark Messenger.dbpro" ] || { echo "original project not found at: $SRC" >&2; exit 1; }
+[ -f "$DEMO/model/hand2/hand2.x" ] || { echo "playable demo not found at: $DEMO" >&2; exit 1; }
 command -v ffmpeg >/dev/null || { echo "ffmpeg is required" >&2; exit 1; }
 
 echo "Building xconv..."
@@ -30,6 +34,9 @@ echo "Converting models..."
 "$XCONV" "$SRC/model/archer/archer1.x"   "$OUT/models/archer.glb"       --double-sided
 "$XCONV" "$SRC/model/archer/archer2.x"   "$OUT/models/archer_death.glb" --double-sided --ticks-per-second 2250
 "$XCONV" "$SRC/model/arrow.x"            "$OUT/models/arrow.glb"        --double-sided --search "$SRC/level"
+# First-person view models, as loaded by the demo (model\hand2, model\dagger2).
+"$XCONV" "$DEMO/model/hand2/hand2.x"     "$OUT/models/hands.glb"        --double-sided
+"$XCONV" "$DEMO/model/dagger2/dagger2.x" "$OUT/models/dagger.glb"       --double-sided
 
 echo "Converting textures..."
 img() { ffmpeg -loglevel error -y -i "$1" "$2"; }

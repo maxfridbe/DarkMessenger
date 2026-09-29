@@ -57,6 +57,8 @@ Bevy cannot read DirectX `.x` models, so `tools/xconv` converts them to binary g
 
 A few textures referenced by `archer1.x` were never shipped with the original project; those parts render with their material colour.
 
+The first-person hands and floating dagger (`model\hand2\hand2.x`, `model\dagger2\dagger2.x`) come from the later **Dark Messenger Playable Demo** build (Dec 2003), which has no source but whose `Dark Messenger.pck` names every file it loads. `convert_assets.sh` takes that folder as its optional second argument (default `~/Downloads/Dark Messenger Playable Demo`). `src/viewmodel.rs` rides them on the camera: the hands play their gesture while you chant, and the dagger hovers point-up above the palms, spinning faster as the chant builds. The placement is a reconstruction; the demo's code isn't available.
+
 ## Differences from the 2003 build
 
 The port keeps the original numbers (speeds, distances, timings, sizes, positions) but fixes or finishes a few things:

@@ -81,7 +81,7 @@ pub struct PlayerInput {
     pub armed: bool,
 }
 
-fn spawn_player(mut commands: Commands) {
+pub(crate) fn spawn_player(mut commands: Commands) {
     commands.spawn((
         Name::new("Player"),
         Player::new(),

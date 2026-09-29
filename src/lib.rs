@@ -14,6 +14,7 @@
 //! | `intersect object`            | `collision.rs` (ray vs level triangles)  |
 //! | particles / `print` debugging | `particles.rs`, `hud.rs`                 |
 //! | (new) touch / gamepad         | `touch.rs`, `player.rs`                  |
+//! | demo build: hands + dagger    | `viewmodel.rs`                           |
 //!
 //! Positions from the original source are left-handed (DirectX); `db()`
 //! converts them to Bevy's right-handed space by negating Z, matching the
@@ -27,6 +28,7 @@ mod particles;
 mod player;
 mod spell;
 mod touch;
+mod viewmodel;
 mod world;
 
 use bevy::prelude::*;
@@ -91,6 +93,7 @@ pub fn run_game() {
             particles::ParticlesPlugin,
             hud::HudPlugin,
             touch::TouchPlugin,
+            viewmodel::ViewModelPlugin,
         ))
         .run();
 }
