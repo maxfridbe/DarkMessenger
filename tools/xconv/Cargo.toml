@@ -1,0 +1,12 @@
+[package]
+name = "xconv"
+version = "0.1.0"
+edition = "2024"
+description = "Converts the original DirectX text .x models of Dark Messenger (2003) into .glb for Bevy"
+
+# Standalone tool, not part of the game build.
+[workspace]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["bmp", "png", "jpeg"] }
+serde_json = "1"

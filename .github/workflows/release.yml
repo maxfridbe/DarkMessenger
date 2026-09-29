@@ -1,0 +1,292 @@
+# Builds Linux, Windows (MinGW cross-compile), macOS arm64 (osxcross in a
+# podman container), Android (cargo-apk) and web (wasm) release artifacts and
+# publishes them as a GitHub Release tagged
+# v<version.txt>. Bump the version with ./increment_version.sh.
+name: Release Builds
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Read version.txt + game.env once; every other job consumes the outputs.
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      game: ${{ steps.v.outputs.game }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          echo "version=$(cat version.txt)" >> "$GITHUB_OUTPUT"
+          source ./game.env
+          echo "game=$GAME_NAME" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bevy system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        run: |
+          GAME='${{ needs.meta.outputs.game }}'
+          V='${{ needs.meta.outputs.version }}'
+          mkdir -p "dist/$GAME"
+          cp "target/release/$GAME" "dist/$GAME/"
+          cp -r assets "dist/$GAME/"
+          tar -C dist -czf "$GAME-linux-x86_64-v$V.tar.gz" "$GAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: "*.tar.gz"
+
+  windows:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW-w64 cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-gnu
+      - name: Package
+        run: |
+          GAME='${{ needs.meta.outputs.game }}'
+          V='${{ needs.meta.outputs.version }}'
+          mkdir -p "dist/$GAME"
+          cp "target/x86_64-pc-windows-gnu/release/$GAME.exe" "dist/$GAME/"
+          cp -r assets "dist/$GAME/"
+          (cd dist && zip -r "../$GAME-windows-x86_64-v$V.zip" "$GAME")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: "*.zip"
+
+  web:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        env:
+          RUSTFLAGS: --cfg getrandom_backend="wasm_js"
+        # --bin: without it the bin and cdylib lib targets both emit
+        # $GAME.wasm into the same directory and whichever links last wins.
+        run: cargo build --profile wasm-release --target wasm32-unknown-unknown --bin '${{ needs.meta.outputs.game }}'
+      - name: Install wasm-bindgen-cli (prebuilt, version-matched to Cargo.lock)
+        run: |
+          WBV=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | cut -d'"' -f2)
+          echo "wasm-bindgen crate version: $WBV"
+          curl -sL "https://github.com/rustwasm/wasm-bindgen/releases/download/$WBV/wasm-bindgen-$WBV-x86_64-unknown-linux-musl.tar.gz" | tar xz
+          sudo mv "wasm-bindgen-$WBV-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/
+          wasm-bindgen --version
+      - name: Package
+        run: |
+          # Pinned binaryen release: Ubuntu's apt package (v108) corrupts the
+          # wasm-bindgen externref table export, which kills the game at
+          # startup with "WebAssembly.Table.grow(): failed to grow table".
+          BINARYEN=version_131
+          curl -sL "https://github.com/WebAssembly/binaryen/releases/download/$BINARYEN/binaryen-$BINARYEN-x86_64-linux.tar.gz" | tar xz
+          sudo mv "binaryen-$BINARYEN/bin/wasm-opt" /usr/local/bin/
+          wasm-opt --version
+          GAME='${{ needs.meta.outputs.game }}'
+          V='${{ needs.meta.outputs.version }}'
+          mkdir -p dist
+          wasm-bindgen --no-typescript --target web \
+            --out-dir dist --out-name "$GAME" \
+            "target/wasm32-unknown-unknown/wasm-release/$GAME.wasm"
+          wasm-opt -Oz --output "dist/${GAME}_bg.wasm.opt" "dist/${GAME}_bg.wasm"
+          mv "dist/${GAME}_bg.wasm.opt" "dist/${GAME}_bg.wasm"
+          ls -lh "dist/${GAME}_bg.wasm"
+          sed "s/{{GAME_NAME}}/$GAME/g" web/index.html > dist/index.html
+          (cd dist && zip -r "../$GAME-web-v$V.zip" .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: "*.zip"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  # Publishes the web build as a live demo at https://<user>.github.io/<repo>/
+  # ONE-TIME SETUP: a repo admin must enable Pages first (Settings -> Pages ->
+  # Source: "GitHub Actions") — the workflow token is not allowed to do it.
+  # Until then this job fails harmlessly (continue-on-error keeps runs green).
+  pages:
+    needs: web
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Enable GitHub Pages (first run only)
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  android:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: Install NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          # android-30 is required: cargo-apk targets SDK platform 30 by default
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.1.10909125" "platforms;android-30" "build-tools;34.0.0"
+      - name: Cache cargo-apk
+        id: cache-cargo-apk
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-apk
+          key: cargo-apk-${{ runner.os }}
+      - name: Install cargo-apk
+        if: steps.cache-cargo-apk.outputs.cache-hit != 'true'
+        # Explicit --root so the binary lands at a known path regardless of
+        # how the runner image configures CARGO_HOME/CARGO_INSTALL_ROOT.
+        run: |
+          cargo install cargo-apk --locked --root "$HOME/.cargo"
+          ls -la "$HOME/.cargo/bin/cargo-apk"
+      - name: Generate signing keystore
+        # CI signs with a freshly generated debug keystore. The keystore path
+        # in Cargo.toml points at the dev machine, so repoint it here.
+        run: |
+          mkdir -p "$HOME/.android"
+          keytool -genkey -v -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          sed -i "s|^path = \".*debug.keystore\"|path = \"$HOME/.android/debug.keystore\"|" Cargo.toml
+      - name: Build APKs
+        run: |
+          set -o pipefail
+          {
+            # Point every NDK env var cargo-apk consults at our pinned NDK,
+            # overriding whatever NDK the runner image presets.
+            export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/26.1.10909125"
+            export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+            export NDK_HOME="$ANDROID_NDK_ROOT"
+            unset ANDROID_SDK_ROOT ANDROID_NDK_PATH
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            ls "$ANDROID_HOME/ndk/"
+            # Invoke by absolute path — PATH differences between steps have
+            # bitten before ("install succeeded", binary not found later).
+            CARGO_APK="$HOME/.cargo/bin/cargo-apk"
+            "$CARGO_APK" apk version
+            GAME='${{ needs.meta.outputs.game }}'
+            V='${{ needs.meta.outputs.version }}'
+            "$CARGO_APK" apk build --release --lib --target aarch64-linux-android
+            mv "target/release/apk/$GAME.apk" "$GAME-android-arm64-v$V.apk"
+            "$CARGO_APK" apk build --release --lib --target x86_64-linux-android
+            mv "target/release/apk/$GAME.apk" "$GAME-android-x86_64-v$V.apk"
+          } 2>&1 | tee apk-build.log
+      - name: Surface failure log as annotations
+        # Job logs of this repo need admin auth to download via API, but
+        # ::error:: annotations are publicly readable — echo the tail of the
+        # build log so failures are diagnosable from outside.
+        if: failure()
+        # GitHub caps annotations at 10 per step — keep the tail tight.
+        run: |
+          tail -n 9 apk-build.log 2>/dev/null | while IFS= read -r l; do echo "::error::${l}"; done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: "*.apk"
+
+  # Cross-compiles for Apple Silicon inside the same podman image you get
+  # locally from ./build_macos.sh - no macOS runner needed. The image bakes in
+  # osxcross + Apple's SDK and takes ~15-20 min to build, so it is cached in
+  # this repo's GHCR registry and only rebuilt when the SDK version changes.
+  macos:
+    needs: meta
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      MACOS_SDK_VERSION: "14.5"
+      MACOS_CARGO_REGISTRY: .ci-cargo-registry
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure podman
+        run: command -v podman || { sudo apt-get update && sudo apt-get install -y podman; }
+      - name: Cache Rust artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ci-cargo-registry
+            target/aarch64-apple-darwin
+          key: macos-cross-${{ hashFiles('Cargo.lock') }}
+          restore-keys: macos-cross-
+      - name: Pull or build the cross-toolchain image
+        run: |
+          set -euo pipefail
+          LOCAL="gamebase-macos-builder:$MACOS_SDK_VERSION"
+          REMOTE="ghcr.io/${GITHUB_REPOSITORY,,}/macos-builder:$MACOS_SDK_VERSION"
+          echo '${{ secrets.GITHUB_TOKEN }}' | podman login ghcr.io -u '${{ github.actor }}' --password-stdin
+          if podman pull "$REMOTE"; then
+            podman tag "$REMOTE" "$LOCAL"
+          else
+            echo "No cached image - building it (this is the slow path)."
+            podman build -f Containerfile.macos -t "$LOCAL" \
+              --build-arg "MACOS_SDK_VERSION=$MACOS_SDK_VERSION" .
+            podman tag "$LOCAL" "$REMOTE"
+            # Forks and PRs from forks get a read-only token; not fatal.
+            podman push "$REMOTE" || echo "::warning::could not cache image in GHCR"
+          fi
+      - name: Build .app and .dmg
+        run: ./build_macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: target/macos_dist/*.dmg
+
+  release:
+    needs: [meta, linux, windows, macos, android, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.meta.outputs.version }}
+          name: ${{ needs.meta.outputs.game }} v${{ needs.meta.outputs.version }}
+          files: |
+            *.tar.gz
+            *.zip
+            *.apk
+            *.dmg

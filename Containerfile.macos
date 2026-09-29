@@ -1,0 +1,108 @@
+# Cross-compilation image for macOS arm64 (Apple Silicon) builds from Linux.
+#
+# Contains:
+#   * osxcross      - clang/cctools/ld64 wrappers that target Apple's SDK
+#   * the macOS SDK - pulled from a PUBLIC mirror (see MACOS_SDK_* args below)
+#   * rustup + the aarch64-apple-darwin target
+#   * rcodesign     - ad-hoc code signing (arm64 macOS REFUSES to run an
+#                     unsigned binary, so this is mandatory, not optional)
+#   * xorriso       - builds the .dmg disk image
+#
+# LICENSING NOTE: the macOS SDK is Apple property. Apple's SDK licence only
+# permits its use on Apple-branded hardware. The mirror below is publicly
+# reachable, but that does not grant you a licence. Use this image for your
+# own builds at your own discretion; do not redistribute the image itself.
+#
+# Build:  podman build -f Containerfile.macos -t gamebase-macos-builder .
+# Run:    see build_macos.sh (that is the supported entry point).
+FROM ubuntu:24.04
+
+# --- Pinned inputs -----------------------------------------------------------
+# SDK mirror: https://github.com/joseluisq/macosx-sdks/releases
+# The checksum is pinned so a silently swapped tarball fails the build rather
+# than getting compiled in. To move to a newer SDK, change BOTH of the next
+# two lines together (the checksum lives in that release's sha256sum.txt).
+ARG MACOS_SDK_VERSION=14.5
+ARG MACOS_SDK_SHA256=6e146275d19f027faa2e8354da5e0267513abf013b8f16ad65a231653a2b1c5d
+ARG MACOS_SDK_BASE_URL=https://github.com/joseluisq/macosx-sdks/releases/download
+# https://github.com/tpoechtrager/osxcross
+ARG OSXCROSS_COMMIT=27d21e4977c9751d01199c7a226a6faf494c3dd9
+# https://github.com/indygreg/apple-platform-rs
+ARG RCODESIGN_VERSION=0.29.0
+# Oldest macOS the produced binary will run on. 11.0 is the floor for arm64.
+ARG MACOS_DEPLOYMENT_TARGET=11.0
+ARG RUST_TOOLCHAIN=stable
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    OSXCROSS_ROOT=/opt/osxcross \
+    CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup
+
+# --- Toolchain dependencies --------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bzip2 ca-certificates clang cmake cpio curl file git libbz2-dev \
+        libclang-dev libssl-dev libxml2-dev llvm-dev lld make patch python3 \
+        uuid-dev xz-utils zlib1g-dev \
+        xorriso zip \
+    && apt-get install -y --no-install-recommends icnsutils || true \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- osxcross + macOS SDK ----------------------------------------------------
+# build.sh compiles cctools/ld64/libtapi against the SDK; this is the slow
+# step (~10 min). The source tree is deleted afterwards, only target/ ships.
+RUN git clone https://github.com/tpoechtrager/osxcross.git /tmp/osxcross \
+    && git -C /tmp/osxcross checkout --quiet "$OSXCROSS_COMMIT" \
+    && curl -fsSL -o "/tmp/osxcross/tarballs/MacOSX${MACOS_SDK_VERSION}.sdk.tar.xz" \
+         "${MACOS_SDK_BASE_URL}/${MACOS_SDK_VERSION}/MacOSX${MACOS_SDK_VERSION}.sdk.tar.xz" \
+    && echo "${MACOS_SDK_SHA256}  /tmp/osxcross/tarballs/MacOSX${MACOS_SDK_VERSION}.sdk.tar.xz" | sha256sum -c - \
+    && cd /tmp/osxcross \
+    && UNATTENDED=1 OSX_VERSION_MIN="$MACOS_DEPLOYMENT_TARGET" TARGET_DIR="$OSXCROSS_ROOT" ./build.sh \
+    && rm -rf /tmp/osxcross
+
+# osxcross names its wrappers after the SDK's Darwin kernel version
+# (SDK 14.5 -> darwin23), which changes whenever MACOS_SDK_VERSION changes.
+# Resolve it once here and bake the result into the environment instead of
+# hardcoding a triple that silently breaks on an SDK bump.
+RUN set -eu; \
+    CLANG_BIN="$(ls "$OSXCROSS_ROOT"/bin/aarch64-apple-darwin*-clang | head -n1)"; \
+    TRIPLE="$(basename "$CLANG_BIN" -clang)"; \
+    SDK_PATH="$OSXCROSS_ROOT/SDK/MacOSX${MACOS_SDK_VERSION}.sdk"; \
+    { \
+      echo "export PATH=$OSXCROSS_ROOT/bin:\$PATH"; \
+      echo "export MACOS_CROSS_TRIPLE=$TRIPLE"; \
+      echo "export MACOS_SDK_PATH=$SDK_PATH"; \
+      echo "export MACOSX_DEPLOYMENT_TARGET=$MACOS_DEPLOYMENT_TARGET"; \
+      echo "export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=${TRIPLE}-clang"; \
+      echo "export CC_aarch64_apple_darwin=${TRIPLE}-clang"; \
+      echo "export CXX_aarch64_apple_darwin=${TRIPLE}-clang++"; \
+      echo "export AR_aarch64_apple_darwin=${TRIPLE}-ar"; \
+      echo "export RANLIB_aarch64_apple_darwin=${TRIPLE}-ranlib"; \
+      # bindgen (pulled in by coreaudio-sys, via cpal, via bevy_audio) runs
+      # libclang directly and ignores CC_*, so it needs the sysroot spelled out.
+      echo "export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_darwin=\"--target=arm64-apple-${TRIPLE#aarch64-apple-} -isysroot $SDK_PATH -F$SDK_PATH/System/Library/Frameworks\""; \
+    } > /etc/profile.d/osxcross.sh; \
+    chmod +x /etc/profile.d/osxcross.sh; \
+    echo "osxcross triple: $TRIPLE"
+
+# --- Rust --------------------------------------------------------------------
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal \
+        --default-toolchain "$RUST_TOOLCHAIN" --target aarch64-apple-darwin \
+    && chmod -R a+w "$CARGO_HOME" "$RUSTUP_HOME"
+ENV PATH=/usr/local/cargo/bin:${OSXCROSS_ROOT}/bin:$PATH
+
+# --- rcodesign (ad-hoc signing) ---------------------------------------------
+RUN set -eu; \
+    base="https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign/${RCODESIGN_VERSION}"; \
+    name="apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl"; \
+    curl -fsSL -o /tmp/rc.tar.gz "$base/${name}.tar.gz"; \
+    curl -fsSL -o /tmp/rc.sha256 "$base/${name}.tar.gz.sha256"; \
+    echo "$(cat /tmp/rc.sha256)  /tmp/rc.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/rc.tar.gz -C /tmp; \
+    install -m0755 "/tmp/${name}/rcodesign" /usr/local/bin/rcodesign; \
+    rm -rf /tmp/rc.tar.gz /tmp/rc.sha256 "/tmp/${name}"; \
+    rcodesign --version
+
+WORKDIR /work
+# Login shell so /etc/profile.d/osxcross.sh is sourced.
+ENTRYPOINT ["/bin/bash", "-lc"]
+CMD ["./build_macos_bundle.sh"]
