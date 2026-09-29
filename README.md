@@ -15,10 +15,11 @@ A Bevy (Rust) port of **Dark Messenger**, a first-person DarkBASIC Pro prototype
 | Mouse | look (click the window to capture the mouse, Esc to release) |
 | Space | jump |
 | Hold left click | chant: the world darkens for 2.75 s, then lightning strikes the spot under the crosshair |
+| Right click / F | throw the floating dagger at the crosshair; it wounds an archer (two hits kill) and floats back |
 | 1 / 2 / Tab (Ctrl = power, as in the original) | spread bolt (0.75 s, 1.25 s recharge) / power bolt (1.25 s, 3 s recharge) |
 | F3 | debug readout (the original `print`ed this every frame) |
-| Gamepad (desktop / web) | left stick move, right stick look, A jump, RT chant, X / Y swap bolt, Start pause |
-| Touch | on-screen stick (left) to walk, drag elsewhere to look, hold CAST, JUMP, BOLT (swap), II (pause) |
+| Gamepad (desktop / web) | left stick move, right stick look, A jump, RT chant, RB dagger, X / Y swap bolt, Start pause |
+| Touch | on-screen stick (left) to walk, drag elsewhere to look, hold CAST, DAGGER, JUMP, BOLT (swap), II (pause) |
 
 The touch controls (`src/touch.rs`) show by default on Android and whenever the screen is touched, and hide when a keyboard key is pressed or a gamepad is connected. The launcher / macOS icon is drawn by `tools/make_icon.py`.
 
@@ -57,7 +58,7 @@ Bevy cannot read DirectX `.x` models, so `tools/xconv` converts them to binary g
 
 A few textures referenced by `archer1.x` were never shipped with the original project; those parts render with their material colour.
 
-The first-person hands and floating dagger (`model\hand2\hand2.x`, `model\dagger2\dagger2.x`) come from the later **Dark Messenger Playable Demo** build (Dec 2003), which has no source but whose `Dark Messenger.pck` names every file it loads. `convert_assets.sh` takes that folder as its optional second argument (default `~/Downloads/Dark Messenger Playable Demo`). `src/viewmodel.rs` rides them on the camera: the hands play their gesture while you chant, and the dagger hovers point-up above the palms, spinning faster as the chant builds. The placement is a reconstruction; the demo's code isn't available.
+The first-person hands and floating dagger (`model\hand2\hand2.x`, `model\dagger2\dagger2.x`) come from the later **Dark Messenger Playable Demo** build (Dec 2003), which has no source but whose `Dark Messenger.pck` names every file it loads. `convert_assets.sh` takes that folder as its optional second argument (default `~/Downloads/Dark Messenger Playable Demo`). `src/viewmodel.rs` rides them on the camera: the hands play their gesture while you chant, and the dagger hovers point-up above the palms, spinning faster as the chant builds. Thrown, it tumbles to the crosshair and floats back (sounds: the demo's `Whoosh.wav`, `knife.wav`, `grunt.wav`). The placement is a reconstruction; the demo's code isn't available.
 
 ## Differences from the 2003 build
 

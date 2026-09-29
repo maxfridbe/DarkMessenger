@@ -147,10 +147,10 @@ fn setup(mut commands: Commands) {
 }
 
 const CONTROLS: &str = "WASD - move    Mouse - look    Space - jump\n\
-Hold left click - chant lightning at the crosshair\n\
+Hold left click - chant lightning at the crosshair    Right click / F - throw the dagger\n\
 1 / 2 (or Tab) - spread / power bolt    Esc - pause    F3 - debug\n\n\
-Gamepad: sticks move / look, A jump, RT chant, X / Y swap bolt, Start pause\n\
-Touch: left stick walks, drag elsewhere to look, hold CAST to chant";
+Gamepad: sticks move / look, A jump, RT chant, RB dagger, X / Y swap bolt, Start pause\n\
+Touch: left stick walks, drag elsewhere to look, hold CAST to chant, DAGGER to throw";
 
 fn update_overlay(
     state: Res<State<GameState>>,

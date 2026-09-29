@@ -76,6 +76,8 @@ pub struct PlayerInput {
     pub jump: bool,
     /// Held: keep chanting whenever the cast delay allows (`mouseclick() = 1`).
     pub cast: bool,
+    /// Throw the floating dagger (edge-triggered).
+    pub throw: bool,
     /// False until the click/tap/button that started or resumed play has
     /// been released, so it doesn't also start a chant.
     pub armed: bool,
@@ -128,8 +130,10 @@ pub fn read_input(
     input.look = motion.delta * MOUSE_SENSITIVITY;
     input.jump = keys.pressed(KeyCode::Space);
     let mut cast = buttons.pressed(MouseButton::Left);
+    input.throw = buttons.just_pressed(MouseButton::Right) || keys.just_pressed(KeyCode::KeyF);
 
-    // Left stick moves, right stick looks, A / cross jumps, right trigger chants.
+    // Left stick moves, right stick looks, A / cross jumps, right trigger
+    // chants, right bumper throws the dagger.
     let deadzone = |v: Vec2| if v.length() < STICK_DEADZONE { Vec2::ZERO } else { v };
     let mut all_released = !cast;
     for pad in &gamepads {
@@ -137,7 +141,8 @@ pub fn read_input(
         let look = deadzone(pad.right_stick());
         input.look += Vec2::new(look.x, -look.y) * GAMEPAD_LOOK_SPEED * time.delta_secs();
         input.jump |= pad.pressed(GamepadButton::South);
-        let pad_cast = pad.pressed(GamepadButton::RightTrigger2) || pad.pressed(GamepadButton::RightTrigger);
+        let pad_cast = pad.pressed(GamepadButton::RightTrigger2);
+        input.throw |= pad.just_pressed(GamepadButton::RightTrigger);
         cast |= pad_cast;
         all_released &= !pad_cast && !pad.pressed(GamepadButton::South) && !pad.pressed(GamepadButton::Start);
     }

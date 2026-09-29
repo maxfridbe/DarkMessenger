@@ -1,5 +1,6 @@
 //! On-screen touch controls: a floating move stick on the left, drag
-//! anywhere else to look, and buttons for chant, jump, bolt swap and pause.
+//! anywhere else to look, and buttons for chant, dagger, jump, bolt swap
+//! and pause.
 //!
 //! They show on Android by default and on any platform as soon as the
 //! screen is touched, and hide again when a keyboard key is pressed or a
@@ -45,19 +46,21 @@ const LOOK_SENSITIVITY: f32 = 0.005;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Button {
     Cast,
+    Throw,
     Jump,
     Swap,
     Pause,
 }
 
 impl Button {
-    const ALL: [Button; 4] = [Button::Cast, Button::Jump, Button::Swap, Button::Pause];
+    const ALL: [Button; 5] = [Button::Cast, Button::Throw, Button::Jump, Button::Swap, Button::Pause];
 
     /// Diameter and centre offset: x from the right edge, y from the bottom
     /// (or from the top for Pause).
     fn layout(self) -> (f32, Vec2) {
         match self {
             Button::Cast => (112.0, Vec2::new(36.0 + 56.0, 40.0 + 56.0)),
+            Button::Throw => (84.0, Vec2::new(190.0, 180.0)),
             Button::Jump => (80.0, Vec2::new(170.0 + 40.0, 28.0 + 40.0)),
             Button::Swap => (64.0, Vec2::new(44.0 + 32.0, 176.0 + 32.0)),
             Button::Pause => (52.0, Vec2::new(20.0 + 26.0, 20.0 + 26.0)),
@@ -67,6 +70,7 @@ impl Button {
     fn label(self) -> &'static str {
         match self {
             Button::Cast => "CAST",
+            Button::Throw => "DAGGER",
             Button::Jump => "JUMP",
             Button::Swap => "BOLT",
             Button::Pause => "II",
@@ -216,6 +220,7 @@ fn touch_input(
         };
         match role {
             Role::Button(Button::Jump) => input.jump = true,
+            Role::Button(Button::Throw) => input.throw = true,
             Role::Button(Button::Swap) => spell.toggle_alignment(),
             Role::Button(Button::Pause) => next.set(GameState::Paused),
             _ => {}

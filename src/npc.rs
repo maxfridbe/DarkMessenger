@@ -1,7 +1,8 @@
 //! `npc.dba`: the archers. Each one idles until the player comes within
 //! 700 units, walks toward them while it can see them, stops to shoot
-//! arrows inside 500 units, and — when a lightning bolt lands on it — is
-//! flung into the air and plays its death animation (archer2.x).
+//! arrows inside 500 units, and — when a lightning bolt lands on it, or
+//! the thrown dagger finds it twice — is flung into the air and plays its
+//! death animation (archer2.x).
 
 use crate::collision::{Body, LevelCollision};
 use crate::player::{Player, PlayerSet};
@@ -14,7 +15,7 @@ pub struct NpcPlugin;
 
 impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_archers).add_systems(
+        app.add_event::<DaggerHit>().add_systems(Startup, spawn_archers).add_systems(
             Update,
             (think, take_hits, finish_dying)
                 .chain()
@@ -38,9 +39,15 @@ pub enum ArcherState {
     Dead,
 }
 
+/// The thrown dagger struck this archer.
+#[derive(Event)]
+pub struct DaggerHit(pub Entity);
+
 #[derive(Component)]
 pub struct Archer {
     pub state: ArcherState,
+    /// Dagger wounds taken; the second one is fatal.
+    wounds: u8,
     idle_model: Entity,
     death_model: Entity,
     /// Entity holding the death scene's AnimationPlayer, once spawned.
@@ -50,6 +57,15 @@ pub struct Archer {
 impl Archer {
     pub fn alive(&self) -> bool {
         !matches!(self.state, ArcherState::Dying | ArcherState::Dead)
+    }
+
+    /// World-space hit box for an archer standing at `pos`.
+    pub fn hit_box(pos: Vec3) -> (Vec3, Vec3) {
+        let feet = pos.y - PIVOT_HEIGHT;
+        (
+            Vec3::new(pos.x - HALF_WIDTH, feet, pos.z - HALF_WIDTH),
+            Vec3::new(pos.x + HALF_WIDTH, feet + HEIGHT, pos.z + HALF_WIDTH),
+        )
     }
 }
 
@@ -99,7 +115,7 @@ fn spawn_archers(mut commands: Commands, asset_server: Res<AssetServer>, mut gra
         let archer = commands
             .spawn((
                 Name::new(format!("Archer {}", i + 1)),
-                Archer { state: ArcherState::Idle, idle_model, death_model, death_player: None },
+                Archer { state: ArcherState::Idle, wounds: 0, idle_model, death_model, death_player: None },
                 Body {
                     vel_y: 0.0,
                     grounded: false,
@@ -189,42 +205,75 @@ fn think(
     }
 }
 
-/// A bolt landing within reach kills the archer: it is thrown up
-/// (`gravity# = rnd(100) + 400`) and swaps to the death model.
+/// Kills the archer: it is thrown up (the original's `gravity# = rnd(100)
+/// + 400`) and swaps to the death model.
+fn kill(
+    archer: &mut Archer,
+    body: &mut Body,
+    launch: f32,
+    animation: &DeathAnimation,
+    visibility: &mut Query<&mut Visibility>,
+    players: &mut Query<&mut AnimationPlayer>,
+) {
+    archer.state = ArcherState::Dying;
+    body.vel_y = launch;
+    body.grounded = false;
+    if let Ok(mut v) = visibility.get_mut(archer.idle_model) {
+        *v = Visibility::Hidden;
+    }
+    if let Ok(mut v) = visibility.get_mut(archer.death_model) {
+        *v = Visibility::Inherited;
+    }
+    if let Some(mut player) = archer.death_player.and_then(|e| players.get_mut(e).ok()) {
+        player.play(animation.node);
+    }
+}
+
+/// A bolt landing within reach kills outright; the dagger wounds first and
+/// kills on the second hit. A wounded archer staggers and gives chase.
+#[allow(clippy::too_many_arguments)]
 fn take_hits(
+    mut commands: Commands,
     time: Res<Time>,
+    asset_server: Res<AssetServer>,
     mut strikes: EventReader<LightningStrike>,
+    mut daggers: EventReader<DaggerHit>,
     animation: Res<DeathAnimation>,
     mut archers: Query<(&mut Archer, &mut Body, &Transform)>,
     mut visibility: Query<&mut Visibility>,
     mut players: Query<&mut AnimationPlayer>,
 ) {
+    let jitter = (time.elapsed_secs() * 7919.0).fract() * 100.0;
     for strike in strikes.read() {
         for (mut archer, mut body, transform) in &mut archers {
-            if !archer.alive() {
-                continue;
+            let (min, max) = Archer::hit_box(transform.translation);
+            let reach = Vec3::splat(strike.half_extent);
+            let (smin, smax) = (strike.point - reach, strike.point + reach);
+            let hit = min.cmplt(smax).all() && max.cmpgt(smin).all();
+            if archer.alive() && hit {
+                kill(&mut archer, &mut body, 400.0 + jitter, &animation, &mut visibility, &mut players);
             }
-            let p = transform.translation;
-            let reach = strike.half_extent + HALF_WIDTH;
-            let feet = p.y - PIVOT_HEIGHT;
-            let hit = (p.x - strike.point.x).abs() < reach
-                && (p.z - strike.point.z).abs() < reach
-                && feet < strike.point.y + strike.half_extent
-                && feet + HEIGHT > strike.point.y - strike.half_extent;
-            if !hit {
-                continue;
-            }
-            archer.state = ArcherState::Dying;
-            body.vel_y = 400.0 + (time.elapsed_secs() * 7919.0).fract() * 100.0;
+        }
+    }
+    for DaggerHit(entity) in daggers.read() {
+        let Ok((mut archer, mut body, _)) = archers.get_mut(*entity) else {
+            continue;
+        };
+        if !archer.alive() {
+            continue;
+        }
+        archer.wounds += 1;
+        commands.spawn((
+            AudioPlayer::new(asset_server.load("sounds/archer_grunt.wav")),
+            PlaybackSettings::DESPAWN,
+        ));
+        if archer.wounds >= 2 {
+            kill(&mut archer, &mut body, 250.0 + jitter, &animation, &mut visibility, &mut players);
+        } else {
+            body.vel_y = 160.0;
             body.grounded = false;
-            if let Ok(mut v) = visibility.get_mut(archer.idle_model) {
-                *v = Visibility::Hidden;
-            }
-            if let Ok(mut v) = visibility.get_mut(archer.death_model) {
-                *v = Visibility::Inherited;
-            }
-            if let Some(mut player) = archer.death_player.and_then(|e| players.get_mut(e).ok()) {
-                player.play(animation.node);
+            if archer.state == ArcherState::Idle {
+                archer.state = ArcherState::Walking;
             }
         }
     }

@@ -55,5 +55,9 @@ sfx() { ffmpeg -loglevel error -y -i "$1" -c:a pcm_s16le "$2"; }
 sfx "$SRC/CustomLightning1.wav" "$OUT/sounds/lightning.wav"
 sfx "$SRC/Chanttone.wav"        "$OUT/sounds/chant.wav"
 sfx "$SRC/arrow.wav"            "$OUT/sounds/arrow.wav"
+# Dagger sounds from the playable demo.
+sfx "$DEMO/Whoosh.wav"          "$OUT/sounds/dagger_throw.wav"
+sfx "$DEMO/knife.wav"           "$OUT/sounds/dagger_hit.wav"
+sfx "$DEMO/grunt.wav"           "$OUT/sounds/archer_grunt.wav"
 
 du -sh "$OUT"/*
