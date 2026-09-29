@@ -1,6 +1,10 @@
 # Dark Messenger 2026
 
-A Bevy (Rust) port of **Dark Messenger**, a first-person DarkBASIC Pro prototype from 2003: you are a mage in a lightmapped castle, archers guard the far hall, and your only weapon is a lightning bolt you have to chant for. It is built on [GameBase](../GameBase), so it ships to **Linux, Windows, macOS, Android and the browser** from one crate.
+### [▶ Play in your browser](https://maxfridbe.github.io/DarkMessenger/) · [⬇ Download (Linux / Windows / macOS / Android)](https://github.com/maxfridbe/DarkMessenger/releases/latest)
+
+[![Dark Messenger](docs/screenshot.jpg)](https://maxfridbe.github.io/DarkMessenger/)
+
+A Bevy (Rust) port of **Dark Messenger**, a first-person DarkBASIC Pro prototype from 2003: you are a mage in a lightmapped castle, archers guard the far hall, and your weapons are a lightning bolt you have to chant for and a dagger that returns to your hand. It is built on [GameBase](https://github.com/maxfridbe/GameBase), so it ships to **Linux, Windows, macOS, Android and the browser** from one crate. Every push to `main` builds all platforms, publishes a GitHub Release and redeploys the browser version.
 
 ## Playing
 
