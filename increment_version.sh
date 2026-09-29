@@ -1,37 +1,58 @@
 #!/bin/bash
-# Bump the game version stored in version.txt and sync it everywhere it
-# appears (Cargo.toml package version, Gradle versionName/versionCode).
+# Date-based versioning: YY.MMDD.## (UTC), e.g. 26.0929.01 is the first
+# build of 29 Sep 2026, 26.0929.02 the second.
 #
-#   ./increment_version.sh          -> bump patch  (0.1.0 -> 0.1.1)
-#   ./increment_version.sh minor    -> bump minor  (0.1.1 -> 0.2.0)
-#   ./increment_version.sh major    -> bump major  (0.2.0 -> 1.0.0)
+#   ./increment_version.sh             next version for today -> write it everywhere
+#   ./increment_version.sh --next      only print the next version
+#   ./increment_version.sh --apply V   write version V everywhere (used by CI)
 #
-# Commit the result; the release workflow (.github/workflows/release.yml)
-# publishes a GitHub Release tagged v<version> on push to the main branch.
-set -e
+# "Next" is one past the highest ## already used today, looking at git tags
+# (v26.0929.NN) and version.txt. CI runs this on every push to main, so each
+# push publishes a new GitHub Release tagged v<version>; nothing needs to be
+# committed. Locally it just keeps your builds labelled.
+#
+# Where the version goes:
+#   version.txt                  26.0929.01                (display form, release tag)
+#   Cargo.toml [package]         26.136.129+26.0929.01     (see below)
+#   app/build.gradle             versionName 26.0929.01, versionCode 26092901
+#
+# Cargo needs plain semver, and cargo-apk turns major.minor.patch into the
+# Android versionCode with each part limited to 0-255. So the semver core is
+# YY . (N >> 8) . (N & 255) with N = day_of_year * 128 + ##, which increases
+# with every build (up to 127 a day), and the readable version rides along as
+# build metadata (it becomes the APK's versionName and the in-game label).
+set -euo pipefail
 cd "$(dirname "$0")"
 
-PART="${1:-patch}"
-VER=$(cat version.txt)
-IFS=. read -r MA MI PA <<< "$VER"
+next_version() {
+    local today max=0 n
+    today="$(date -u +%y.%m%d)"
+    for n in $(git tag -l "v$today.*" 2>/dev/null | sed "s/^v$today\.//") \
+             $(sed -n "s/^$today\.//p" version.txt 2>/dev/null); do
+        [[ "$n" =~ ^[0-9]+$ ]] && (( 10#$n > max )) && max=$((10#$n))
+    done
+    printf '%s.%02d\n' "$today" $((max + 1))
+}
 
-case "$PART" in
-    major) MA=$((MA+1)); MI=0; PA=0;;
-    minor) MI=$((MI+1)); PA=0;;
-    patch) PA=$((PA+1));;
-    *) echo "usage: $0 [major|minor|patch]"; exit 1;;
+apply_version() {
+    local v="$1" yy mm dd nn doy n semver code
+    [[ "$v" =~ ^([0-9]{2})\.([0-9]{2})([0-9]{2})\.([0-9]{2,3})$ ]] || { echo "bad version '$v' (want YY.MMDD.##)" >&2; exit 1; }
+    yy=$((10#${BASH_REMATCH[1]})); mm=${BASH_REMATCH[2]}; dd=${BASH_REMATCH[3]}; nn=$((10#${BASH_REMATCH[4]}))
+    (( nn >= 1 && nn <= 127 )) || { echo "build number must be 1-127, got $nn" >&2; exit 1; }
+    doy=$((10#$(date -u -d "20$(printf '%02d' $yy)-$mm-$dd" +%j)))
+    n=$((doy * 128 + nn))
+    semver="$yy.$((n >> 8)).$((n & 255))+$v"
+    code="${yy}${mm}${dd}$(printf '%02d' $nn)"
+
+    echo "$v" > version.txt
+    sed -i "0,/^version = \".*\"/s//version = \"$semver\"/" Cargo.toml
+    sed -i "s/versionName \".*\"/versionName \"$v\"/; s/versionCode [0-9]*/versionCode $code/" app/build.gradle
+    echo "Version $v (cargo $semver, gradle versionCode $code)"
+}
+
+case "${1:-}" in
+    --next) next_version ;;
+    --apply) apply_version "${2:?usage: $0 --apply YY.MMDD.##}" ;;
+    "") apply_version "$(next_version)" ;;
+    *) echo "usage: $0 [--next | --apply YY.MMDD.##]" >&2; exit 1 ;;
 esac
-
-NEW="$MA.$MI.$PA"
-echo "$NEW" > version.txt
-
-# Sync Cargo.toml [package] version (first version line in the file)
-sed -i "0,/^version = \".*\"/s//version = \"$NEW\"/" Cargo.toml
-
-# Sync the Gradle path (Path B): versionName + a monotonic versionCode
-CODE=$((MA*10000 + MI*100 + PA))
-sed -i "s/versionName \".*\"/versionName \"$NEW\"/" app/build.gradle
-sed -i "s/versionCode [0-9]*/versionCode $CODE/" app/build.gradle
-
-echo "Version: $VER -> $NEW (android versionCode $CODE)"
-echo "Now commit + push; CI will publish release v$NEW."

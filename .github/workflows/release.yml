@@ -1,7 +1,8 @@
 # Builds Linux, Windows (MinGW cross-compile), macOS arm64 (osxcross in a
 # podman container), Android (cargo-apk) and web (wasm) release artifacts and
-# publishes them as a GitHub Release tagged
-# v<version.txt>. Bump the version with ./increment_version.sh.
+# publishes them as a GitHub Release tagged v<YY.MMDD.##>. The version is
+# computed per run by ./increment_version.sh from the date (UTC) and the
+# tags already published today, so every push gets the next number.
 name: Release Builds
 
 on:
@@ -12,8 +13,14 @@ on:
 permissions:
   contents: write
 
+# One release run at a time, so two pushes can't claim the same ##.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  # Read version.txt + game.env once; every other job consumes the outputs.
+  # Work out this run's version + read game.env once; every other job
+  # consumes the outputs and stamps the version into its checkout.
   meta:
     runs-on: ubuntu-latest
     outputs:
@@ -21,9 +28,11 @@ jobs:
       game: ${{ steps.v.outputs.game }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # all tags, to find today's highest build number
       - id: v
         run: |
-          echo "version=$(cat version.txt)" >> "$GITHUB_OUTPUT"
+          echo "version=$(./increment_version.sh --next)" >> "$GITHUB_OUTPUT"
           source ./game.env
           echo "game=$GAME_NAME" >> "$GITHUB_OUTPUT"
 
@@ -32,6 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Stamp version
+        run: ./increment_version.sh --apply '${{ needs.meta.outputs.version }}'
       - name: Install Bevy system dependencies
         run: |
           sudo apt-get update
@@ -58,6 +69,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Stamp version
+        run: ./increment_version.sh --apply '${{ needs.meta.outputs.version }}'
       - name: Install MinGW-w64 cross toolchain
         run: |
           sudo apt-get update
@@ -86,6 +99,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Stamp version
+        run: ./increment_version.sh --apply '${{ needs.meta.outputs.version }}'
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -158,6 +173,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Stamp version
+        run: ./increment_version.sh --apply '${{ needs.meta.outputs.version }}'
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
@@ -241,6 +258,8 @@ jobs:
       MACOS_CARGO_REGISTRY: .ci-cargo-registry
     steps:
       - uses: actions/checkout@v4
+      - name: Stamp version
+        run: ./increment_version.sh --apply '${{ needs.meta.outputs.version }}'
       - name: Ensure podman
         run: command -v podman || { sudo apt-get update && sudo apt-get install -y podman; }
       - name: Cache Rust artifacts
@@ -284,6 +303,8 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.meta.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
           name: ${{ needs.meta.outputs.game }} v${{ needs.meta.outputs.version }}
           files: |
             *.tar.gz

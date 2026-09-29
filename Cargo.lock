@@ -1773,7 +1773,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "dark_messenger"
-version = "0.1.0"
+version = "26.136.1+26.0929.01"
 dependencies = [
  "bevy",
  "bevy_embedded_assets",

@@ -153,20 +153,24 @@ Things worth knowing before you ship the `.dmg`:
 | `deploy_apk_to_emulator.sh` | Re-install Path B APK without rebuilding |
 | `read_logs.sh` / `read_logs_phone.sh` | Dump last 50 relevant log lines (emulator / phone) |
 | `kill_phone_app.sh` | Force-stop the game on the phone |
-| `increment_version.sh [major\|minor\|patch]` | Bump `version.txt` (default: patch) and sync the version into `Cargo.toml` and `app/build.gradle` |
+| `increment_version.sh [--next\|--apply V]` | Set the next date-based version `YY.MMDD.##` (or print it / set `V`) in `version.txt`, `Cargo.toml` and `app/build.gradle` |
 
 ## Versioning + CI releases
 
-`version.txt` at the repo root is the single source of truth for the game version.
+Versions are date-based: **`YY.MMDD.##`** in UTC, e.g. `26.0929.01` for the first build of 29 Sep 2026 and `26.0929.02` for the next. The number increments automatically: nothing has to be bumped or committed.
 
-1. `./increment_version.sh` (or `minor` / `major`) bumps it and syncs `Cargo.toml` + Gradle `versionName`/`versionCode`.
-2. Commit and push to `main`.
-3. `.github/workflows/release.yml` builds every platform on GitHub Actions and publishes a **GitHub Release tagged `v<version>`** with:
+1. Push to `main`.
+2. `.github/workflows/release.yml` works out the version (`./increment_version.sh --next`: one past the highest `vYY.MMDD.##` tag published today), stamps it into every build (`--apply`), and runs one release at a time so two pushes never share a number.
+3. It builds every platform and publishes a **GitHub Release tagged `v<version>`** with:
    - `<game>-linux-x86_64-v<version>.tar.gz` (binary + assets)
    - `<game>-windows-x86_64-v<version>.zip` (exe + assets, MinGW cross-compiled)
    - `<game>-macos-arm64-v<version>.dmg` (Apple Silicon `.app` in a disk image)
    - `<game>-android-arm64-v<version>.apk` (phones) and `<game>-android-x86_64-v<version>.apk` (emulator)
    - `<game>-web-v<version>.zip` (static site) — the same build is also deployed to **GitHub Pages** as the live demo (first run: if the `pages` job fails, enable Pages once under repo Settings → Pages → Source: GitHub Actions)
+
+The version is shown on the title screen. Locally, `./increment_version.sh` labels your build with the next number for today (from tags and `version.txt`).
+
+Under the hood `Cargo.toml` can't hold `26.0929.01` (semver forbids leading zeros, and cargo-apk packs major/minor/patch into the Android versionCode with each part capped at 255). So the package version is `YY.(N>>8).(N&255)+YY.MMDD.##`, with N = day-of-year × 128 + ##. It grows with every build (up to 127 a day) and carries the readable version as build metadata, which becomes the APK's versionName.
 
 Pushing again without bumping the version updates the existing release for that tag rather than creating a new one. CI signs APKs with a freshly generated debug keystore — replace that step with a real keystore (repo secret) before shipping to a store.
 

@@ -152,6 +152,13 @@ Hold left click - chant lightning at the crosshair    Right click / F - throw th
 Gamepad: sticks move / look, A jump, RT chant, RB dagger, X / Y swap bolt, Start pause\n\
 Touch: left stick walks, drag elsewhere to look, hold CAST to chant, DAGGER to throw";
 
+/// The YY.MMDD.## version, carried as semver build metadata (see
+/// increment_version.sh).
+fn version() -> &'static str {
+    let full = env!("CARGO_PKG_VERSION");
+    full.split_once('+').map_or(full, |(_, v)| v)
+}
+
 fn update_overlay(
     state: Res<State<GameState>>,
     mut overlay: Query<&mut Visibility, With<Overlay>>,
@@ -168,7 +175,7 @@ fn update_overlay(
     };
     let (t, b) = match state.get() {
         GameState::Loading => ("DARK MESSENGER", "Loading...".to_string()),
-        GameState::Paused => ("DARK MESSENGER", format!("Click or tap to play\n\n{CONTROLS}")),
+        GameState::Paused => ("DARK MESSENGER", format!("Click or tap to play\n\n{CONTROLS}\n\nv{}", version())),
         GameState::Dead => ("YOU HAVE FALLEN", "Click or tap to rise again".to_string()),
         GameState::Playing => ("", String::new()),
     };
