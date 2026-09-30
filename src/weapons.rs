@@ -162,7 +162,11 @@ const DARKEN_PER_SECOND: f32 = 0.35;
 const DAGGER_CHANT: f32 = 0.5;
 const DAGGER_SPEED: f32 = 800.0;
 const DAGGER_RETURN_SPEED: f32 = 1000.0;
+/// In flight (`scale object 1020, 200, 200, 200`).
 const DAGGER_SCALE: f32 = 2.0;
+/// Held: camera-space spot above the hands, and its size there.
+const DAGGER_HELD: Vec3 = Vec3::new(0.0, -6.5, -16.0);
+const DAGGER_HELD_SCALE: f32 = 0.9;
 const SPIKE_SCALE: f32 = 3.5;
 const SPIKE_TIME: f32 = 2.0;
 const SPIKE_LAST_FRAME: f32 = 10.0 * FRAME;
@@ -509,35 +513,42 @@ fn show_spike(weapon: Res<Weapon>, mut spike: Query<(&mut Transform, &mut Visibi
 fn show_dagger(
     time: Res<Time>,
     mut weapon: ResMut<Weapon>,
-    player: Query<(&Player, &Transform), Without<DaggerModel>>,
+    player: Query<&Transform, (With<Player>, Without<DaggerModel>)>,
     mut dagger: Query<(&mut Transform, &mut Visibility), With<DaggerModel>>,
 ) {
-    let (Ok((player, eye_t)), Ok((mut t, mut vis))) = (player.get_single(), dagger.get_single_mut()) else {
+    let (Ok(eye_t), Ok((mut t, mut vis))) = (player.get_single(), dagger.get_single_mut()) else {
         return;
     };
     let eye = eye_t.translation;
-    let forward = Vec3::new(player.yaw.cos(), 0.0, -player.yaw.sin());
-    let reach = 12.0 * player.pitch.cos();
+    // Held: pinned to the view just above the hands (the original placed it
+    // level with the horizon, so it slid around as you looked up and down).
+    let held = |t: &mut Transform, lift: f32| {
+        t.translation = eye_t.transform_point(DAGGER_HELD + Vec3::Y * lift);
+        // Point (+Z in the model) away from the viewer.
+        t.rotation = eye_t.rotation * Quat::from_rotation_y(std::f32::consts::PI);
+        t.scale = Vec3::splat(DAGGER_HELD_SCALE);
+    };
     match weapon.state {
         WeaponState::Idle if weapon.kind == WeaponKind::Dagger => {
-            // `yScale# + 180 * cycleTime#`, `pos.y - 10 + cos(yScale#) * 3`
+            // `yScale# + 180 * cycleTime#`: a slow bob.
             weapon.bob += 180.0 * time.delta_secs();
-            t.translation = eye + forward * reach + Vec3::Y * (-10.0 + weapon.bob.to_radians().cos() * 3.0);
-            t.look_to(-forward, Vec3::Y);
+            held(&mut t, weapon.bob.to_radians().cos() * 0.6);
             *vis = Visibility::Inherited;
         }
         WeaponState::Chanting { .. } if weapon.kind == WeaponKind::Dagger => {
-            t.translation = eye + forward * reach + Vec3::Y * (-20.0 + weapon.bob.to_radians().cos() * 10.0);
-            t.look_to(-forward, Vec3::Y);
+            // Bobs harder while spinning up for the throw.
+            held(&mut t, weapon.bob.to_radians().cos() * 2.0);
             *vis = Visibility::Inherited;
         }
         WeaponState::Falling { .. } if weapon.kind == WeaponKind::Dagger => {
             t.translation = weapon.loc;
+            t.scale = Vec3::splat(DAGGER_SCALE);
             t.look_to(-weapon.dagger_dir, Vec3::Y);
             *vis = Visibility::Inherited;
         }
         WeaponState::Returning => {
             t.translation = weapon.loc;
+            t.scale = Vec3::splat(DAGGER_SCALE);
             let home = eye - weapon.loc;
             if home.length_squared() > 1.0 {
                 t.look_to(home, Vec3::Y);

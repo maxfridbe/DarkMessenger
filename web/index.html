@@ -16,6 +16,24 @@
 <body>
     <div id="loading">Loading&hellip;</div>
     <canvas id="game-canvas"></canvas>
+    <script>
+        // Browsers start an AudioContext suspended unless it is created during
+        // a user gesture. Bevy creates its one at startup, so remember every
+        // context and resume them on the first tap / click / key press.
+        (function () {
+            const Base = window.AudioContext || window.webkitAudioContext;
+            if (!Base) return;
+            const contexts = [];
+            class TrackedAudioContext extends Base {
+                constructor(...args) { super(...args); contexts.push(this); }
+            }
+            window.AudioContext = TrackedAudioContext;
+            window.webkitAudioContext = TrackedAudioContext;
+            const resume = () => contexts.forEach((c) => { if (c.state !== 'running') c.resume(); });
+            ['pointerdown', 'touchstart', 'touchend', 'mousedown', 'keydown'].forEach((type) =>
+                document.addEventListener(type, resume, { capture: true, passive: true }));
+        })();
+    </script>
     <script type="module">
         import init from './{{GAME_NAME}}.js';
         init()

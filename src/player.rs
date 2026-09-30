@@ -7,6 +7,7 @@
 //! dead NPCs, K / L toggle knights / archers into their "modeling" pose.
 
 use crate::collision::{Body, LevelCollision};
+use crate::touch::TouchControls;
 use crate::weapons::WeaponKind;
 use crate::{GameState, db};
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -129,6 +130,7 @@ pub fn read_input(
     motion: Res<AccumulatedMouseMotion>,
     touches: Res<Touches>,
     gamepads: Query<&Gamepad>,
+    touch: Res<TouchControls>,
     mut input: ResMut<PlayerInput>,
 ) {
     let mut movement = Vec2::ZERO;
@@ -144,9 +146,12 @@ pub fn read_input(
     if keys.any_pressed([KeyCode::KeyD, KeyCode::ArrowRight]) {
         movement.x += 1.0;
     }
-    input.look = motion.delta * MOUSE_SENSITIVITY;
+    // Browsers also turn touches into mouse events; while the touch
+    // controls are in use, the mouse is ignored so a drag isn't counted twice.
+    let mouse = !touch.visible;
+    input.look = if mouse { motion.delta * MOUSE_SENSITIVITY } else { Vec2::ZERO };
     input.jump = keys.pressed(KeyCode::Space);
-    let mut cast = buttons.pressed(MouseButton::Left);
+    let mut cast = mouse && buttons.pressed(MouseButton::Left);
     input.select = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4]
         .iter()
         .position(|k| keys.just_pressed(*k))
@@ -272,8 +277,13 @@ fn pause_on_escape(
 
 /// Browsers drop pointer lock on Esc without telling the game; clicking
 /// again re-requests it.
-fn regrab_on_click(buttons: Res<ButtonInput<MouseButton>>, mut window: Query<&mut Window, With<PrimaryWindow>>) {
+fn regrab_on_click(
+    buttons: Res<ButtonInput<MouseButton>>,
+    touch: Res<TouchControls>,
+    mut window: Query<&mut Window, With<PrimaryWindow>>,
+) {
     if buttons.just_pressed(MouseButton::Left)
+        && !touch.visible
         && let Ok(mut window) = window.get_single_mut() {
             set_grab(&mut window, true);
         }

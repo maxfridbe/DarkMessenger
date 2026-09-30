@@ -42,7 +42,8 @@ const STICK_KNOB: f32 = 56.0;
 const STICK_HOME: Vec2 = Vec2::new(40.0 + STICK_RADIUS, 40.0 + STICK_RADIUS);
 /// Touches starting left of this fraction of the width drive the stick.
 const STICK_ZONE: f32 = 0.45;
-const LOOK_SENSITIVITY: f32 = 0.005;
+/// Radians per logical pixel of drag.
+const LOOK_SENSITIVITY: f32 = 0.004;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Button {

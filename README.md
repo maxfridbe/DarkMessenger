@@ -81,6 +81,7 @@ The port keeps the original numbers (speeds, distances, timings, damage, sizes, 
 - **The bolt and spike land on the floor under the crosshair.** The original cast rays from y = ±10000, which only worked because its ray test ignored back faces; the port's is double-sided, so it would hit the level's sealed ceiling.
 - **The crosshair ray is fixed.** `input.dba` built its end point from `pos.x` for all three axes.
 - **Walls slide.** Movement blocked by a wall slides along it instead of stopping dead.
+- **The held dagger stays over the hands.** The original placed it level with the horizon, so it slid around the screen as you looked up and down; here it is pinned to the view.
 - **Death returns to the intro** after a "You have fallen" screen (the original jumped straight back).
 - Added: pause screen (browsers need a click before capturing the mouse), the weapon name and a book hint on screen, a red flash when hurt, gamepad and touch controls.
 
