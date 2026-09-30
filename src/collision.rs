@@ -1,12 +1,14 @@
-//! Replacement for DarkBASIC's `intersect object`: ray casts against the
-//! level's triangles (including invisible "caulk" faces), built once from
-//! the loaded level glTF.
+//! Replacement for DarkBASIC's `intersect object` and `object collision`:
+//! ray casts against a level's triangles (including invisible "caulk"
+//! faces) and a few box tests. Both levels' triangle sets are built once
+//! while loading; `LevelCollision` holds the active one.
 
 use crate::GameState;
-use crate::world::LevelAssets;
+use crate::assets::GameAssets;
 use bevy::gltf::{Gltf, GltfMesh};
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, VertexAttributeValues};
+use std::sync::Arc;
 
 pub struct CollisionPlugin;
 
@@ -16,12 +18,11 @@ impl Plugin for CollisionPlugin {
     }
 }
 
-/// Per-frame velocity lost to gravity in the original (`gravity# - 9.8`
-/// every loop), expressed per second at 60 fps.
-pub const GRAVITY: f32 = 9.8 * 60.0;
+/// `gravity# = gravity# - 9.8 * avgCycleTime# * 100` (player.dba, npc.dba).
+pub const GRAVITY: f32 = 980.0;
 
-/// Something that walks on the level: the player (origin = eye) or an
-/// archer (origin = model pivot, hovering slightly above the floor).
+/// Something that walks on the level: the player (origin = eye) or an NPC
+/// (origin = feet).
 #[derive(Component, Clone)]
 pub struct Body {
     pub vel_y: f32,
@@ -41,9 +42,16 @@ struct Triangle {
     e2: Vec3,
 }
 
-#[derive(Resource)]
+/// Triangles of the active level (cheap to clone: shared).
+#[derive(Resource, Clone)]
 pub struct LevelCollision {
-    triangles: Vec<Triangle>,
+    triangles: Arc<Vec<Triangle>>,
+}
+
+/// Collision for both levels, built during loading.
+#[derive(Resource)]
+pub struct LevelLibrary {
+    pub levels: [LevelCollision; 2],
 }
 
 impl LevelCollision {
@@ -52,7 +60,7 @@ impl LevelCollision {
     pub fn ray(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
         let mut best = max;
         let mut hit = false;
-        for t in &self.triangles {
+        for t in self.triangles.iter() {
             // Möller–Trumbore
             let p = dir.cross(t.e2);
             let det = t.e1.dot(p);
@@ -125,11 +133,12 @@ impl LevelCollision {
         }
         pos.y += body.vel_y * dt;
         if let Some(g) = ground
-            && pos.y < g {
-                pos.y = g;
-                body.vel_y = 0.0;
-                body.grounded = true;
-            }
+            && pos.y < g
+        {
+            pos.y = g;
+            body.vel_y = 0.0;
+            body.grounded = true;
+        }
     }
 
     /// True when nothing in the level blocks the segment `from` -> `to`.
@@ -140,29 +149,63 @@ impl LevelCollision {
     }
 }
 
-fn build_level_collision(
-    mut commands: Commands,
-    level: Option<Res<LevelAssets>>,
-    existing: Option<Res<LevelCollision>>,
-    gltfs: Res<Assets<Gltf>>,
-    gltf_meshes: Res<Assets<GltfMesh>>,
-    meshes: Res<Assets<Mesh>>,
-) {
-    let (Some(level), None) = (level, existing) else {
-        return;
-    };
-    let Some(gltf) = gltfs.get(&level.gltf) else {
-        return;
-    };
+/// Axis-aligned box as (min, max).
+pub type Aabb3 = (Vec3, Vec3);
+
+/// Box of `size` centred on `center`.
+pub fn aabb(center: Vec3, size: Vec3) -> Aabb3 {
+    (center - size / 2.0, center + size / 2.0)
+}
+
+pub fn aabb_overlap(a: Aabb3, b: Aabb3) -> bool {
+    a.0.cmplt(b.1).all() && a.1.cmpgt(b.0).all()
+}
+
+/// Slab test: does the segment `from + dir * [0, len]` touch the box?
+pub fn segment_hits_box(from: Vec3, dir: Vec3, len: f32, (min, max): Aabb3) -> bool {
+    let (mut t0, mut t1) = (0.0f32, len);
+    for i in 0..3 {
+        if dir[i].abs() < 1e-6 {
+            if from[i] < min[i] || from[i] > max[i] {
+                return false;
+            }
+            continue;
+        }
+        let (a, b) = ((min[i] - from[i]) / dir[i], (max[i] - from[i]) / dir[i]);
+        t0 = t0.max(a.min(b));
+        t1 = t1.min(a.max(b));
+        if t0 > t1 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Distance along the ray to the box, if it is hit (for NPC avoidance rays).
+pub fn ray_box(from: Vec3, dir: Vec3, max: f32, (min, max_b): Aabb3) -> Option<f32> {
+    let (mut t0, mut t1) = (0.0f32, max);
+    for i in 0..3 {
+        if dir[i].abs() < 1e-6 {
+            if from[i] < min[i] || from[i] > max_b[i] {
+                return None;
+            }
+            continue;
+        }
+        let (a, b) = ((min[i] - from[i]) / dir[i], (max_b[i] - from[i]) / dir[i]);
+        t0 = t0.max(a.min(b));
+        t1 = t1.min(a.max(b));
+        if t0 > t1 {
+            return None;
+        }
+    }
+    Some(t0)
+}
+
+fn triangles(gltf: &Gltf, gltf_meshes: &Assets<GltfMesh>, meshes: &Assets<Mesh>) -> Option<Vec<Triangle>> {
     let mut triangles = Vec::new();
     for handle in &gltf.meshes {
-        let Some(gltf_mesh) = gltf_meshes.get(handle) else {
-            return;
-        };
-        for primitive in &gltf_mesh.primitives {
-            let Some(mesh) = meshes.get(&primitive.mesh) else {
-                return;
-            };
+        for primitive in &gltf_meshes.get(handle)?.primitives {
+            let mesh = meshes.get(&primitive.mesh)?;
             let Some(VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
                 continue;
             };
@@ -177,6 +220,29 @@ fn build_level_collision(
             }
         }
     }
-    info!("level collision: {} triangles", triangles.len());
-    commands.insert_resource(LevelCollision { triangles });
+    Some(triangles)
+}
+
+fn build_level_collision(
+    mut commands: Commands,
+    assets: Option<Res<GameAssets>>,
+    existing: Option<Res<LevelLibrary>>,
+    gltfs: Res<Assets<Gltf>>,
+    gltf_meshes: Res<Assets<GltfMesh>>,
+    meshes: Res<Assets<Mesh>>,
+) {
+    let (Some(assets), None) = (assets, existing) else {
+        return;
+    };
+    let mut built = Vec::new();
+    for handle in [&assets.level1, &assets.level2] {
+        let Some(tris) = gltfs.get(handle).and_then(|g| triangles(g, &gltf_meshes, &meshes)) else {
+            return;
+        };
+        info!("level collision: {} triangles", tris.len());
+        built.push(LevelCollision { triangles: Arc::new(tris) });
+    }
+    let [one, two]: [LevelCollision; 2] = built.try_into().ok().unwrap();
+    commands.insert_resource(one.clone());
+    commands.insert_resource(LevelLibrary { levels: [one, two] });
 }

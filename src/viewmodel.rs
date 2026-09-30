@@ -1,19 +1,18 @@
-//! First-person view model from the Dec 2003 playable demo: Darius's hands
-//! (model\hand2, a skinned rig with a 1.5 s spell gesture) and the dagger
-//! that floats in front of him (model\dagger2). Both ride on the camera.
-//! The hands play their gesture while chanting; the dagger bobs and turns,
-//! spinning faster as the chant builds and hardest while a bolt strikes.
+//! `drawHands()` from `player.dba`: Darius's hands (model\hand2, one
+//! 48-frame timeline) ride in front of the camera. The frame range depends
+//! on what the player is doing:
 //!
-//! The dagger is also a weapon: thrown, it flies at the crosshair, wounds
-//! the first archer it meets (`npc::DaggerHit`) or glances off a wall, then
-//! floats back to the hands.
+//! - idle / bone spike: frames 0.5–24 (looping);
+//! - chanting lightning: frames 24–30, slowly;
+//! - dagger: draws with frames 31–45, then holds on 45–48.
+//!
+//! Looking down past 55° ghosts the hands (`ghost object on hand, 1`).
 
 use crate::GameState;
-use crate::collision::LevelCollision;
-use crate::npc::{Archer, DaggerHit};
-use crate::player::{Player, PlayerInput, PlayerSet};
-use crate::spell::{Spell, SpellState};
-use bevy::audio::Volume;
+use crate::anim::{self, FRAME, FrameAnim};
+use crate::assets::GameAssets;
+use crate::player::{Player, PlayerSet};
+use crate::weapons::{Weapon, WeaponKind, WeaponSet, WeaponState};
 use bevy::prelude::*;
 use bevy::scene::SceneInstanceReady;
 
@@ -22,251 +21,118 @@ pub struct ViewModelPlugin;
 impl Plugin for ViewModelPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn.after(crate::player::spawn_player))
-            .add_systems(Update, animate_hands)
-            .add_systems(Update, throw_dagger.after(PlayerSet).run_if(in_state(GameState::Playing)))
-            .add_systems(Update, move_dagger.after(throw_dagger));
+            .add_systems(Update, animate_hands.after(PlayerSet).after(WeaponSet).run_if(in_state(GameState::Playing)))
+            .add_systems(Update, show_hands);
     }
 }
 
-// Placement relative to the camera (camera looks down -Z, +Y up, +X right).
-const HANDS_OFFSET: Vec3 = Vec3::new(0.0, -9.0, -14.0);
+// Placement relative to the camera (camera looks down -Z, +Y up, +X right):
+// low and close, turned to face away, so the sleeves rise out of the
+// bottom corners of the screen. (drawHands used 6 ahead / 20 down / 75%
+// with DarkBASIC's narrower view; this frames the same way.)
+const HANDS_OFFSET: Vec3 = Vec3::new(0.0, -12.0, -12.0);
 const HANDS_SCALE: f32 = 0.35;
-const HANDS_ROTATION_Y: f32 = 0.0;
-/// The dagger hovers above the open palms, point away from the viewer.
-const DAGGER_OFFSET: Vec3 = Vec3::new(0.0, -7.5, -18.0);
-const DAGGER_SCALE: f32 = 0.7;
-/// Thrown, the dagger grows to a readable size in the world.
-const DAGGER_FLIGHT_SCALE: f32 = 3.5;
-const THROW_SPEED: f32 = 1600.0;
-const RETURN_SPEED: f32 = 1100.0;
-const THROW_RANGE: f32 = 1500.0;
-
-#[derive(Clone, Copy, PartialEq)]
-enum DaggerState {
-    Floating,
-    Flying { direction: Vec3, travelled: f32 },
-    Returning,
-}
-
-#[derive(Resource)]
-struct Gesture {
-    graph: Handle<AnimationGraph>,
-    node: AnimationNodeIndex,
-    player: Option<Entity>,
-}
+/// `if theCamera.phi# > 55`
+const GHOST_PITCH: f32 = 55.0_f32.to_radians();
 
 #[derive(Component)]
-struct Hands;
-
-#[derive(Component)]
-struct Dagger {
-    state: DaggerState,
-    spin: f32,
+struct Hands {
+    materials: Vec<(Handle<StandardMaterial>, AlphaMode)>,
+    ghosted: bool,
 }
 
-#[derive(Resource)]
-struct DaggerSounds {
-    throw: Handle<AudioSource>,
-    hit: Handle<AudioSource>,
-}
-
-pub(crate) fn spawn(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut graphs: ResMut<Assets<AnimationGraph>>,
-    camera: Query<Entity, With<Player>>,
-) {
-    let Ok(camera) = camera.get_single() else {
+fn spawn(mut commands: Commands, assets: Res<GameAssets>, camera: Query<Entity, With<Player>>) {
+    let (Ok(camera), Some(source)) = (camera.get_single(), &assets.hands.anim) else {
         return;
     };
-    let clip = asset_server.load(GltfAssetLabel::Animation(0).from_asset("models/hands.glb"));
-    let (graph, node) = AnimationGraph::from_clip(clip);
-    commands.insert_resource(Gesture { graph: graphs.add(graph), node, player: None });
-
     let hands = commands
         .spawn((
-            Hands,
+            Hands { materials: Vec::new(), ghosted: false },
             Name::new("Hands"),
-            SceneRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/hands.glb"))),
+            SceneRoot(assets.hands.scene.clone()),
+            FrameAnim::new(source, 0.5 * FRAME),
             Transform::from_translation(HANDS_OFFSET)
-                .with_rotation(Quat::from_rotation_y(HANDS_ROTATION_Y))
+                .with_rotation(Quat::from_rotation_y(std::f32::consts::PI))
                 .with_scale(Vec3::splat(HANDS_SCALE)),
+            Visibility::Hidden,
         ))
-        .observe(hook_gesture)
+        .observe(anim::hook)
+        .observe(collect_materials)
         .id();
     commands.entity(camera).add_child(hands);
-    // The dagger lives in world space so it can leave the hands; while
-    // floating it is re-placed relative to the camera every frame.
-    commands.spawn((
-        Dagger { state: DaggerState::Floating, spin: 0.0 },
-        Name::new("Floating dagger"),
-        SceneRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/dagger.glb"))),
-        Transform::from_scale(Vec3::splat(DAGGER_SCALE)),
-    ));
-    commands.insert_resource(DaggerSounds {
-        throw: asset_server.load("sounds/dagger_throw.wav"),
-        hit: asset_server.load("sounds/dagger_hit.wav"),
-    });
 }
 
-/// Parks the gesture on its first frame until a chant starts.
-fn hook_gesture(
+fn collect_materials(
     trigger: Trigger<SceneInstanceReady>,
-    mut commands: Commands,
-    mut gesture: ResMut<Gesture>,
     children: Query<&Children>,
-    mut players: Query<&mut AnimationPlayer>,
+    parts: Query<&MeshMaterial3d<StandardMaterial>>,
+    materials: Res<Assets<StandardMaterial>>,
+    mut hands: Query<&mut Hands>,
 ) {
+    let Ok(mut hands) = hands.get_mut(trigger.entity()) else {
+        return;
+    };
     for entity in children.iter_descendants(trigger.entity()) {
-        if let Ok(mut player) = players.get_mut(entity) {
-            player.start(gesture.node).pause();
-            commands.entity(entity).insert(AnimationGraphHandle(gesture.graph.clone()));
-            gesture.player = Some(entity);
+        if let Ok(m) = parts.get(entity) {
+            let mode = materials.get(&m.0).map_or(AlphaMode::Opaque, |m| m.alpha_mode);
+            hands.materials.push((m.0.clone(), mode));
         }
     }
 }
 
-fn animate_hands(spell: Res<Spell>, gesture: Res<Gesture>, mut players: Query<&mut AnimationPlayer>, mut was_chanting: Local<bool>) {
-    let Some(mut player) = gesture.player.and_then(|e| players.get_mut(e).ok()) else {
-        return;
-    };
-    let chanting = matches!(spell.state, SpellState::Chanting { .. });
-    if chanting && !*was_chanting {
-        // `start` rewinds but keeps the paused flag from the idle pose.
-        player.start(gesture.node).resume();
-    } else if !chanting && *was_chanting {
-        player.start(gesture.node).pause();
-    }
-    *was_chanting = chanting;
-}
-
-fn play(commands: &mut Commands, sound: &Handle<AudioSource>) {
-    commands.spawn((AudioPlayer::new(sound.clone()), PlaybackSettings::DESPAWN.with_volume(Volume::new(0.8))));
-}
-
-/// Launches the floating dagger at whatever the crosshair is on.
-fn throw_dagger(
-    mut commands: Commands,
-    input: Res<PlayerInput>,
-    spell: Res<Spell>,
-    sounds: Res<DaggerSounds>,
-    camera: Query<&Transform, (With<Player>, Without<Dagger>)>,
-    mut dagger: Query<(&mut Dagger, &Transform)>,
-) {
-    let (Ok(camera), Ok((mut dagger, transform))) = (camera.get_single(), dagger.get_single_mut()) else {
-        return;
-    };
-    if !input.throw || dagger.state != DaggerState::Floating {
-        return;
-    }
-    let target = spell.aim_point.unwrap_or(camera.translation + *camera.forward() * THROW_RANGE);
-    let direction = (target - transform.translation).normalize_or(*camera.forward());
-    dagger.state = DaggerState::Flying { direction, travelled: 0.0 };
-    play(&mut commands, &sounds.throw);
-}
-
-/// Hover in front of the hands, fly, strike, and float home.
-fn move_dagger(
-    mut commands: Commands,
+fn animate_hands(
     time: Res<Time>,
-    state: Res<State<GameState>>,
-    spell: Res<Spell>,
-    sounds: Res<DaggerSounds>,
-    level: Option<Res<LevelCollision>>,
-    mut hits: EventWriter<DaggerHit>,
-    camera: Query<&Transform, (With<Player>, Without<Dagger>)>,
-    archers: Query<(Entity, &Archer, &Transform), Without<Dagger>>,
-    mut dagger: Query<(&mut Dagger, &mut Transform)>,
+    mut weapon: ResMut<Weapon>,
+    player: Query<&Player>,
+    mut hands: Query<(&mut Hands, &mut FrameAnim)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let (Ok(camera), Ok((mut dagger, mut transform))) = (camera.get_single(), dagger.get_single_mut()) else {
+    let (Ok(player), Ok((mut hands, mut anim))) = (player.get_single(), hands.get_single_mut()) else {
         return;
     };
     let dt = time.delta_secs().min(0.05);
-    let t = time.elapsed_secs();
-    let (rate, lift) = match spell.state {
-        SpellState::Idle => (0.8, 0.0),
-        SpellState::Chanting { time, .. } => (0.8 + time * 4.0, time.min(1.0) * 2.0),
-        SpellState::Striking { .. } => (14.0, 2.0),
-    };
-    let hover = DAGGER_OFFSET + Vec3::Y * ((t * 1.7).sin() * 0.6 + lift);
-    let home = camera.transform_point(hover);
-    let playing = *state.get() == GameState::Playing;
+    if let Some(cue) = weapon.hand_cue.take() {
+        anim.ticks = cue;
+    }
+    let chanting = matches!(weapon.state, WeaponState::Chanting { .. });
+    match weapon.kind {
+        WeaponKind::Dagger => {
+            anim.ticks += 37.5 * 30.0 * dt;
+            if anim.ticks > 48.0 * FRAME {
+                anim.ticks = 45.0 * FRAME;
+            }
+        }
+        WeaponKind::Spread | WeaponKind::Power if chanting => {
+            anim.ticks += 11.5 * 30.0 * dt;
+            if anim.ticks > 30.0 * FRAME {
+                anim.ticks = 24.0 * FRAME;
+            }
+        }
+        _ => {
+            anim.ticks += 37.5 * 30.0 * dt;
+            if anim.ticks > 24.0 * FRAME {
+                anim.ticks = 0.5 * FRAME;
+            }
+        }
+    }
 
-    match dagger.state {
-        DaggerState::Floating => {
-            dagger.spin += rate * dt;
-            transform.translation = home;
-            transform.scale = Vec3::splat(DAGGER_SCALE);
-            // The point is +Z in the model; aim it down the camera's view
-            // (-Z) and turn the blade about its length.
-            transform.rotation =
-                camera.rotation * Quat::from_rotation_y(std::f32::consts::PI) * Quat::from_rotation_z(dagger.spin);
-        }
-        DaggerState::Flying { direction, travelled } if playing => {
-            let step = THROW_SPEED * dt;
-            let from = transform.translation;
-            let struck = archers.iter().filter(|(_, a, _)| a.alive()).find(|(_, _, a)| {
-                let (min, max) = Archer::hit_box(a.translation);
-                segment_hits_box(from, direction, step, min, max)
-            });
-            let wall = level.as_ref().and_then(|l| l.ray(from, direction, step));
-            if let Some((entity, _, _)) = struck {
-                hits.send(DaggerHit(entity));
-                play(&mut commands, &sounds.hit);
-                dagger.state = DaggerState::Returning;
-            } else if let Some(d) = wall {
-                transform.translation = from + direction * d;
-                play(&mut commands, &sounds.hit);
-                dagger.state = DaggerState::Returning;
-            } else {
-                transform.translation = from + direction * step;
-                dagger.state = if travelled + step > THROW_RANGE {
-                    DaggerState::Returning
-                } else {
-                    DaggerState::Flying { direction, travelled: travelled + step }
-                };
-            }
-            dagger.spin += 22.0 * dt;
-            let grow = ((travelled + step) / 150.0).min(1.0);
-            transform.scale = Vec3::splat(DAGGER_SCALE + (DAGGER_FLIGHT_SCALE - DAGGER_SCALE) * grow);
-            // Point first, spinning about the blade.
-            transform.rotation = Quat::from_rotation_arc(Vec3::Z, direction) * Quat::from_rotation_z(dagger.spin);
-        }
-        DaggerState::Returning if playing => {
-            // Drifts home through walls, turning lazily, shrinking back.
-            let to_home = home - transform.translation;
-            let step = RETURN_SPEED * dt;
-            dagger.spin += 3.0 * dt;
-            if to_home.length() <= step {
-                dagger.state = DaggerState::Floating;
-                transform.translation = home;
-            } else {
-                transform.translation += to_home.normalize() * step;
-                let near = (to_home.length() / 900.0).min(1.0);
-                transform.scale = Vec3::splat(DAGGER_SCALE + (DAGGER_FLIGHT_SCALE - DAGGER_SCALE) * near);
-                transform.rotation = Quat::from_rotation_arc(Vec3::Z, -to_home.normalize()) * Quat::from_rotation_z(dagger.spin);
+    let ghost = player.pitch < -GHOST_PITCH;
+    if ghost != hands.ghosted {
+        hands.ghosted = ghost;
+        for (handle, original) in &hands.materials {
+            if let Some(m) = materials.get_mut(handle) {
+                m.alpha_mode = if ghost { AlphaMode::Add } else { *original };
             }
         }
-        _ => {}
     }
 }
 
-/// Slab test: does the segment `from + dir * [0, len]` touch the box?
-fn segment_hits_box(from: Vec3, dir: Vec3, len: f32, min: Vec3, max: Vec3) -> bool {
-    let (mut t0, mut t1) = (0.0f32, len);
-    for i in 0..3 {
-        if dir[i].abs() < 1e-6 {
-            if from[i] < min[i] || from[i] > max[i] {
-                return false;
-            }
-            continue;
-        }
-        let (a, b) = ((min[i] - from[i]) / dir[i], (max[i] - from[i]) / dir[i]);
-        t0 = t0.max(a.min(b));
-        t1 = t1.min(a.max(b));
-        if t0 > t1 {
-            return false;
+fn show_hands(state: Res<State<GameState>>, mut hands: Query<&mut Visibility, With<Hands>>) {
+    let visible = matches!(state.get(), GameState::Playing | GameState::Paused | GameState::Dead);
+    for mut v in &mut hands {
+        let want = if visible { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != want {
+            *v = want;
         }
     }
-    true
 }

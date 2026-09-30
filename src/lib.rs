@@ -1,34 +1,45 @@
-//! Dark Messenger 2026 — a port of the 2003 DarkBASIC Pro prototype
-//! "Dark Messenger" (first-person lightning mage vs. archers) to Bevy.
+//! Dark Messenger 2026 — a port of the DarkBASIC Pro game "Dark Messenger"
+//! (Nov 2003; Mark Tulewicz, Wiktor Kopec, models by Maksim Fridberg) to
+//! Bevy. You are Darius, a messenger with a returning dagger, lightning and
+//! a bone spike, fighting through a castle of knights and archers to a
+//! book that opens the way out.
 //!
-//! Each original source file maps to a plugin:
+//! Each original source file maps to modules here:
 //!
-//! | 2003 (DarkBASIC Pro)          | 2026 (Bevy)                              |
-//! |-------------------------------|------------------------------------------|
-//! | `Dark Messenger.dba` (setup)  | `world.rs` (level, sky, lights, statue)  |
-//! | `input.dba`                   | `player.rs` (mouse look, movement, jump) |
-//! | `main.dba` (weapon states)    | `spell.rs` (chant + lightning strike)    |
-//! | `npc.dba`                     | `npc.rs` (archer state machine)          |
-//! | `arrow.dba`                   | `arrow.rs` (archer projectiles)          |
-//! | `timer.dba`                   | Bevy's `Time`                            |
-//! | `intersect object`            | `collision.rs` (ray vs level triangles)  |
-//! | particles / `print` debugging | `particles.rs`, `hud.rs`                 |
-//! | (new) touch / gamepad         | `touch.rs`, `player.rs`                  |
-//! | demo build: hands + dagger    | `viewmodel.rs`                           |
+//! | 2003 (DarkBASIC Pro)            | 2026 (Bevy)                                   |
+//! |---------------------------------|-----------------------------------------------|
+//! | `Dark Messenger.dba` intro/menu | `intro.rs`                                    |
+//! | `Dark Messenger.dba` setup      | `assets.rs`, `world.rs` (levels, sky, light)  |
+//! | `input.dba`, `player.dba`       | `player.rs` (look, move, gravity), `viewmodel.rs` (hands) |
+//! | `weapon.dba` + chanting         | `weapons.rs` (dagger, lightning, bone spike)  |
+//! | `npc.dba`                       | `npc.rs` (knights and archers)                |
+//! | `arrow.dba`                     | `arrow.rs`                                    |
+//! | `main.dba` (fire, vortex, book) | `effects.rs`                                  |
+//! | `timer.dba`                     | Bevy's `Time`                                 |
+//! | `set object frame`              | `anim.rs`                                     |
+//! | `intersect object`              | `collision.rs` (rays vs level triangles)      |
+//! | sprites / `print` debugging     | `hud.rs`                                      |
+//! | (new) touch / gamepad           | `touch.rs`, `player.rs`                       |
 //!
 //! Positions from the original source are left-handed (DirectX); `db()`
 //! converts them to Bevy's right-handed space by negating Z, matching the
 //! model conversion in `tools/xconv`.
 
+// Bevy systems routinely take many parameters and nested query filters.
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+
+mod anim;
 mod arrow;
+mod assets;
 mod collision;
+mod effects;
 mod hud;
+mod intro;
 mod npc;
-mod particles;
 mod player;
-mod spell;
 mod touch;
 mod viewmodel;
+mod weapons;
 mod world;
 
 use bevy::prelude::*;
@@ -41,17 +52,20 @@ fn main() {
     run_game();
 }
 
-/// Top-level flow. The original only ever ran its `play` state; the title
-/// overlay exists so the browser has a click to capture the mouse with.
+/// Top-level flow (the original's `theGame.currentState`).
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GameState {
-    /// Level and collision mesh are streaming in.
+    /// Assets and collision meshes are streaming in.
     #[default]
     Loading,
-    /// Title / pause overlay; click to (re)capture the mouse.
-    Paused,
+    /// The D2 model turning in the dark to `darkness.wav`.
+    Intro,
+    /// The painted menu: REVENGE or Cower.
+    Menu,
     Playing,
-    /// Health reached zero; click to rise again.
+    /// Pause overlay; click to (re)capture the mouse.
+    Paused,
+    /// Health reached zero; click to start over.
     Dead,
 }
 
@@ -84,13 +98,16 @@ pub fn run_game() {
         }))
         .init_state::<GameState>()
         .add_plugins((
+            assets::AssetsPlugin,
+            anim::AnimPlugin,
             collision::CollisionPlugin,
+            intro::IntroPlugin,
             world::WorldPlugin,
             player::PlayerPlugin,
-            spell::SpellPlugin,
+            weapons::WeaponsPlugin,
             npc::NpcPlugin,
             arrow::ArrowPlugin,
-            particles::ParticlesPlugin,
+            effects::EffectsPlugin,
             hud::HudPlugin,
             touch::TouchPlugin,
             viewmodel::ViewModelPlugin,

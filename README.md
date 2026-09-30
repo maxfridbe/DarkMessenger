@@ -4,7 +4,7 @@
 
 [![Dark Messenger](docs/screenshot.jpg)](https://maxfridbe.github.io/DarkMessenger/)
 
-A Bevy (Rust) port of **Dark Messenger**, a first-person DarkBASIC Pro prototype from 2003: you are a mage in a lightmapped castle, archers guard the far hall, and your weapons are a lightning bolt you have to chant for and a dagger that returns to your hand. It is built on [GameBase](https://github.com/maxfridbe/GameBase), so it ships to **Linux, Windows, macOS, Android and the browser** from one crate. Every push to `main` builds all platforms, publishes a GitHub Release and redeploys the browser version.
+A Bevy (Rust) port of **Dark Messenger**, a first-person DarkBASIC Pro game from November 2003 by Mark Tulewicz and Wiktor Kopec, with models by Maksim Fridberg (sounds from Nintendo's *Eternal Darkness*). You are Darius, a messenger with a returning dagger, two lightning chants and a bone spike, fighting through a castle of knights and archers to the book that opens the way out. It is built on [GameBase](https://github.com/maxfridbe/GameBase), so it ships to **Linux, Windows, macOS, Android and the browser** from one crate. Every push to `main` builds all platforms, publishes a GitHub Release and redeploys the browser version.
 
 ## Playing
 
@@ -13,40 +13,51 @@ A Bevy (Rust) port of **Dark Messenger**, a first-person DarkBASIC Pro prototype
 ./build_web.sh && python3 -m http.server -d target/web_dist 8080   # browser
 ```
 
+The game opens like the original: the D2 model turning in the dark to `darkness.wav` (Space / click / tap skips), then the painted menu (**REVENGE** plays, **Cower** quits). Level one is the castle. Find the book in the library and press **E** to open it; a vortex opens high up in the castle. Step into it for level two, the "Game Over" courtyard where the models pose.
+
 | Input | Action |
 |-------|--------|
 | WASD / arrows | move |
 | Mouse | look (click the window to capture the mouse, Esc to release) |
 | Space | jump |
-| Hold left click | chant: the world darkens for 2.75 s, then lightning strikes the spot under the crosshair |
-| Right click / F | throw the floating dagger at the crosshair; it wounds an archer (two hits kill) and floats back |
-| 1 / 2 / Tab (Ctrl = power, as in the original) | spread bolt (0.75 s, 1.25 s recharge) / power bolt (1.25 s, 3 s recharge) |
+| 1 | dagger: hold the click and it spins for 0.5 s, then flies at the crosshair, wounds (20–60 damage) and flies home |
+| 2 | spread lightning: a 2.75 s chant darkens the world and turns it blue, then a thin bolt strikes under the crosshair (3.25 s recharge) |
+| 3 | power lightning: the same chant, a thick 1.85 s bolt (4.25 s recharge) |
+| 4 | bone spike: erupts from the floor under the crosshair for 2 s (6 s recharge) |
+| Hold left click | use the weapon |
+| E | open / close the book (in the library) |
+| H | heal (a debug key the original shipped with); R raises the dead; K / L put knights / archers into their "modeling" pose |
 | F3 | debug readout (the original `print`ed this every frame) |
-| Gamepad (desktop / web) | left stick move, right stick look, A jump, RT chant, RB dagger, X / Y swap bolt, Start pause |
-| Touch | on-screen stick (left) to walk, drag elsewhere to look, hold CAST, DAGGER, JUMP, BOLT (swap), II (pause) |
+| Gamepad (desktop / web) | left stick move, right stick look, A jump, RT use weapon, B book, bumpers or X / Y change weapon, Start pause |
+| Touch | on-screen stick (left) to walk, drag elsewhere to look, CAST, WEAPON, JUMP, USE, II (pause) |
+
+The left (red) bar is the recharge, or while the dagger is out, how far away it is. The right (blue) bar is health. Knights wake within 700 units, march up and swing for 15; archers shoot from 1000 units for 10 when they can see you. Lightning and the spike kill outright; the dagger takes a few hits.
 
 The touch controls (`src/touch.rs`) show by default on Android and whenever the screen is touched, and hide when a keyboard key is pressed or a gamepad is connected. The launcher / macOS icon is drawn by `tools/make_icon.py`.
-
-Archers wake up when you come within 700 units, walk toward you while they can see you, and fire arrows inside 500. A bolt landing within 100 units throws an archer into the air and plays its death animation.
 
 ## Project layout
 
 ```
-src/lib.rs          app setup, GameState (Loading / Paused / Playing / Dead), db() coordinate helper
-src/world.rs        level + lightmaps, sky sphere, purple sun, Darius statue, wind loop, light level
-src/collision.rs    ray casts against the level triangles (DarkBASIC's `intersect object`), walking bodies
-src/player.rs       first-person camera, movement, jump, gravity, cursor capture, touch input
-src/spell.rs        chant / strike state machine, bolt visuals, aim marker
-src/npc.rs          archer state machine and death animation
-src/arrow.rs        archer arrows, damage to the player
-src/particles.rs    torch and spray emitters
-src/hud.rs          crosshair, health / spell bars, overlays, debug text
+src/lib.rs          app setup, GameState (Loading / Intro / Menu / Playing / Paused / Dead), db() coordinate helper
+src/assets.rs       every model, image and sound, loaded up front
+src/intro.rs        intro, menu, loading screen
+src/world.rs        levels one and two, lightmaps, sky, the chant's light, wind loop
+src/effects.rs      fire and fountain frames, the book and the vortex, level two's graffiti
+src/player.rs       first-person camera, movement, jump, gravity, input (keyboard / mouse / gamepad)
+src/viewmodel.rs    Darius's hands and their animation ranges
+src/weapons.rs      dagger, lightning, bone spike
+src/npc.rs          knight and archer state machines
+src/arrow.rs        archer arrows
+src/anim.rs         `set object frame`: frame-driven animation
+src/collision.rs    ray casts against the level triangles (`intersect object`), walking bodies, boxes
+src/hud.rs          the original bars and crosshair, labels, overlays, debug text
+src/touch.rs        on-screen touch controls
 tools/xconv/        converter: DirectX text .x -> .glb (standalone crate)
 tools/convert_assets.sh   regenerates assets/ from the original project
 assets/             converted, embedded game assets (committed)
 ```
 
-The original sources live next to this folder (`../Dark MessengerFrozen/Dark Messenger/*.dba`, the later of the two snapshots). Each `.dba` file maps to one module; the header of `src/lib.rs` has the table.
+The original project lives next to this folder in `../Dark MessengerNov2003/` (the "Dark Messenger Source and Models" archive: `Dark Messenger.dba`, `input.dba`, `main.dba`, `player.dba`, `weapon.dba`, `npc.dba`, `arrow.dba`, `timer.dba`). The header of `src/lib.rs` maps each file to its module. `../Dark MessengerFrozen` and `../dmFirstCore` are earlier snapshots.
 
 ## Asset pipeline
 
@@ -55,26 +66,23 @@ Bevy cannot read DirectX `.x` models, so `tools/xconv` converts them to binary g
 - frames become nodes, meshes are split per material, n-gons are fan-triangulated;
 - left-handed DirectX space is mirrored to Bevy's right-handed space (Z negated, winding reversed); the game uses `db(x, y, z)` for positions taken from the original source;
 - skin weights and keyframe animations (rotation / scale / position / matrix keys) become glTF skins and animations; skinned meshes are placed outside their skeleton because Bevy 0.15's loader hangs otherwise;
-- the level (`one.x`) is merged with its lightmap export (`one_lm.x`): lightmap UVs become `TEXCOORD_1` and each material is named `material@lightmap`, which `world.rs` turns into a Bevy `Lightmap`;
-- `--merge` collapses the level's 150 meshes into one (39 draw calls instead of 1041).
+- each level (`one.x`, `two.x`) is merged with its lightmap export (`*_lm.x`): lightmap UVs become `TEXCOORD_1` and each material is named `material@lightmap`, which `world.rs` turns into a Bevy `Lightmap`; `--merge` collapses the level's meshes into one per material;
+- textures are sniffed by content (several 2003 ".jpg" files are really BMPs).
 
-`tools/convert_assets.sh` runs xconv on every model, converts the lightmaps and lightning frames from BMP to PNG, the 5.6 MB wind track to Ogg Vorbis and the sound effects to 16-bit WAV (needs `ffmpeg`). Only rerun it when the conversion changes; its output is already in `assets/`.
+Animations keep DarkBASIC's timeline (150 ticks per frame), and `anim.rs` pins each model to a frame the way the original called `set object frame` every loop, so the frame ranges in the source (knight walk 31–50, archer shoot 63–76, …) carry over unchanged.
 
-A few textures referenced by `archer1.x` were never shipped with the original project; those parts render with their material colour.
+`tools/convert_assets.sh` converts every model, the lightmaps, the fire / water / vortex frames, the menu and HUD images (black made transparent for sprites), the wind and intro tracks (Ogg Vorbis) and the sound effects (16-bit WAV). It needs `ffmpeg`. Only rerun it when the conversion changes; its output is already in `assets/`.
 
-The first-person hands and floating dagger (`model\hand2\hand2.x`, `model\dagger2\dagger2.x`) come from the later **Dark Messenger Playable Demo** build (Dec 2003), which has no source but whose `Dark Messenger.pck` names every file it loads. `convert_assets.sh` takes that folder as its optional second argument (default `~/Downloads/Dark Messenger Playable Demo`). `src/viewmodel.rs` rides them on the camera: the hands play their gesture while you chant, and the dagger hovers above the palms pointing away from you, spinning faster as the chant builds. Thrown, it flies point-first to the crosshair and floats back (sounds: the demo's `Whoosh.wav`, `knife.wav`, `grunt.wav`). The placement is a reconstruction; the demo's code isn't available.
+## Differences from the 2003 game
 
-## Differences from the 2003 build
+The port keeps the original numbers (speeds, distances, timings, damage, sizes, positions, frame ranges) and quirks (the knight's swing never stops half-way, arrows fly through walls, archers never walk). What changed:
 
-The port keeps the original numbers (speeds, distances, timings, sizes, positions) but fixes or finishes a few things:
-
-- **Gravity and timers are time-based.** The original subtracted `9.8` from the vertical speed once per frame; the port uses 588 units/s² (the same at 60 fps).
-- **Archers wake below 500 units too.** The original only woke them between 500 and 700 units.
-- **Arrows hurt.** `thePlayer.health` and the `death` game state existed but were unused; arrows now deal 10 damage, stop at walls, and dying shows a "click to rise again" screen.
-- **The bolt lands on the floor under the crosshair.** The original cast a ray down from y = 10000, which only worked because its ray test ignored back faces; the port's ray test is double-sided, so it would have hit the level's sealed ceiling.
+- **Everything is time-based.** Values the original applied once per loop (e.g. the vortex texture) run at a fixed rate.
+- **The bolt and spike land on the floor under the crosshair.** The original cast rays from y = ±10000, which only worked because its ray test ignored back faces; the port's is double-sided, so it would hit the level's sealed ceiling.
 - **The crosshair ray is fixed.** `input.dba` built its end point from `pos.x` for all three axes.
 - **Walls slide.** Movement blocked by a wall slides along it instead of stopping dead.
-- A title/pause overlay was added (browsers need a click before capturing the mouse), plus HUD bars and a win message.
+- **Death returns to the intro** after a "You have fallen" screen (the original jumped straight back).
+- Added: pause screen (browsers need a click before capturing the mouse), the weapon name and a book hint on screen, a red flash when hurt, gamepad and touch controls.
 
 ---
 

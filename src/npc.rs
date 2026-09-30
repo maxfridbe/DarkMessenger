@@ -1,158 +1,140 @@
-//! `npc.dba`: the archers. Each one idles until the player comes within
-//! 700 units, walks toward them while it can see them, stops to shoot
-//! arrows inside 500 units, and — when a lightning bolt lands on it, or
-//! the thrown dagger finds it twice — is flung into the air and plays its
-//! death animation (archer2.x).
+//! `npc.dba`: knights (knight2.x) and archers (archer3.x). Every state
+//! plays a frame range of the model's single timeline, advanced by hand
+//! exactly as NpcFsm did:
+//!
+//! | state        | knight frames        | archer frames      |
+//! |--------------|----------------------|--------------------|
+//! | idle         | 11–30                | 21–30              |
+//! | walking      | 31–50                | 11–20              |
+//! | attacking    | 50–75 (sword swings) | 63–76 (shooting)   |
+//! | getting hit  | 76–79                | 31–35              |
+//! | dying        | 76–100               | 31–62              |
+//!
+//! Knights wake within 700 units, walk up and swing (15 damage a swing).
+//! Archers stand their ground and shoot from 1000 units while they can see
+//! the player. The dagger wounds (20–60 damage archers, 20–40 knights),
+//! lightning and the bone spike kill outright. Corpses vanish after 10 s.
 
-use crate::collision::{Body, LevelCollision};
-use crate::player::{Player, PlayerSet};
-use crate::spell::LightningStrike;
-use crate::{GameState, db};
+use crate::GameState;
+use crate::anim::{self, FRAME, FrameAnim};
+use crate::assets::{GameAssets, play};
+use crate::collision::{Aabb3, Body, LevelCollision, aabb, aabb_overlap, ray_box};
+use crate::player::{Player, PlayerInput, PlayerSet};
+use crate::weapons::{HitKind, Weapon, WeaponSet};
+use crate::world::LevelEntity;
 use bevy::prelude::*;
-use bevy::scene::SceneInstanceReady;
 
 pub struct NpcPlugin;
 
 impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<DaggerHit>().add_systems(Startup, spawn_archers).add_systems(
+        app.add_systems(
             Update,
-            (think, take_hits, finish_dying)
-                .chain()
-                .in_set(NpcSet)
-                .after(PlayerSet)
-                .run_if(in_state(GameState::Playing)),
+            (think, move_npcs).chain().in_set(NpcSet).after(PlayerSet).after(WeaponSet).run_if(in_state(GameState::Playing)),
         );
     }
 }
 
-/// Archer AI; arrows are loosed after it decides who is attacking.
+/// NPC AI; arrows are loosed after it decides who is shooting.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NpcSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArcherState {
+pub enum NpcKind {
+    Knight,
+    Archer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NpcState {
     Idle,
     Walking,
     Attacking,
+    GettingHit,
     Dying,
     Dead,
+    Modeling,
 }
-
-/// The thrown dagger struck this archer.
-#[derive(Event)]
-pub struct DaggerHit(pub Entity);
 
 #[derive(Component)]
-pub struct Archer {
-    pub state: ArcherState,
-    /// Dagger wounds taken; the second one is fatal.
-    wounds: u8,
-    idle_model: Entity,
-    death_model: Entity,
-    /// Entity holding the death scene's AnimationPlayer, once spawned.
-    death_player: Option<Entity>,
+pub struct Npc {
+    pub kind: NpcKind,
+    pub state: NpcState,
+    pub health: f32,
+    /// Animation position in DarkBASIC ticks.
+    frame: f32,
+    /// Knight swing direction (`theCharList().flag`).
+    flag: u8,
+    /// Seconds until a corpse is removed (`timeToRot#`).
+    rot: f32,
+    /// Point the NPC faces (`theCharList().view`).
+    pub view: Vec3,
+    /// Horizontal step for this frame (walking only).
+    step: Vec3,
+    /// An archer with a clear shot this frame.
+    pub shooting: bool,
+    model: Entity,
 }
 
-impl Archer {
+impl Npc {
     pub fn alive(&self) -> bool {
-        !matches!(self.state, ArcherState::Dying | ArcherState::Dead)
+        !matches!(self.state, NpcState::Dying | NpcState::Dead)
     }
 
-    /// World-space hit box for an archer standing at `pos`.
-    pub fn hit_box(pos: Vec3) -> (Vec3, Vec3) {
-        let feet = pos.y - PIVOT_HEIGHT;
-        (
-            Vec3::new(pos.x - HALF_WIDTH, feet, pos.z - HALF_WIDTH),
-            Vec3::new(pos.x + HALF_WIDTH, feet + HEIGHT, pos.z + HALF_WIDTH),
-        )
+    /// `make object box boundingBox, 50, 100, 50` at pos + 50.
+    pub fn hit_box(pos: Vec3) -> Aabb3 {
+        aabb(pos + Vec3::Y * 50.0, Vec3::new(50.0, 100.0, 50.0))
     }
-}
 
-/// Marks the death-animation scene and points back at its archer.
-#[derive(Component)]
-struct DeathModel(Entity);
-
-#[derive(Resource)]
-struct DeathAnimation {
-    graph: Handle<AnimationGraph>,
-    node: AnimationNodeIndex,
-}
-
-/// `scale object ..., 250, 250, 250`
-const MODEL_SCALE: f32 = 2.5;
-/// `moveX# / mag# * 150.0 * avgCycleTime`
-const WALK_SPEED: f32 = 150.0;
-const WAKE_DISTANCE: f32 = 700.0;
-const ATTACK_DISTANCE: f32 = 500.0;
-/// Archers stop closing in at this distance.
-const MIN_DISTANCE: f32 = 200.0;
-/// Horizontal half-size of an archer's hit box.
-const HALF_WIDTH: f32 = 30.0;
-/// The converted archer model stands with its feet at the pivot.
-const PIVOT_HEIGHT: f32 = 1.0;
-const HEIGHT: f32 = 100.0;
-/// Height of the archer's eyes above its pivot, for line-of-sight checks.
-pub const EYE_OFFSET: f32 = 75.0;
-
-/// Starting positions and view targets of `theCharList(1)` and `(2)`.
-const ARCHERS: [(Vec3, Vec3); 2] = [
-    (db(2574.0, 150.0, 0.0), db(0.0, 150.0, 1.0)),
-    (db(2500.0, 150.0, -90.0), db(10.0, 150.0, 29.0)),
-];
-
-fn spawn_archers(mut commands: Commands, asset_server: Res<AssetServer>, mut graphs: ResMut<Assets<AnimationGraph>>) {
-    let clip = asset_server.load(GltfAssetLabel::Animation(0).from_asset("models/archer_death.glb"));
-    let (graph, node) = AnimationGraph::from_clip(clip);
-    commands.insert_resource(DeathAnimation { graph: graphs.add(graph), node });
-
-    let idle_scene = asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/archer.glb"));
-    let death_scene = asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/archer_death.glb"));
-    for (i, (pos, view)) in ARCHERS.into_iter().enumerate() {
-        let scale = Transform::from_scale(Vec3::splat(MODEL_SCALE));
-        let idle_model = commands.spawn((SceneRoot(idle_scene.clone()), scale)).id();
-        let death_model = commands.spawn((SceneRoot(death_scene.clone()), scale, Visibility::Hidden)).id();
-        let archer = commands
-            .spawn((
-                Name::new(format!("Archer {}", i + 1)),
-                Archer { state: ArcherState::Idle, wounds: 0, idle_model, death_model, death_player: None },
-                Body {
-                    vel_y: 0.0,
-                    grounded: false,
-                    stand_height: PIVOT_HEIGHT,
-                    step: 65.0,
-                    top: HEIGHT,
-                    radius: 20.0,
-                },
-                Transform::from_translation(pos).looking_to(flat(view - pos), Vec3::Y),
-                Visibility::default(),
-            ))
-            .add_children(&[idle_model, death_model])
-            .id();
-        commands.entity(death_model).insert(DeathModel(archer)).observe(attach_death_animation);
+    fn last_frame(&self) -> f32 {
+        match self.kind {
+            NpcKind::Knight => 100.0 * FRAME,
+            NpcKind::Archer => 76.0 * FRAME,
+        }
     }
 }
 
-/// Hooks the archer's death animation graph onto its scene's player.
-fn attach_death_animation(
-    trigger: Trigger<SceneInstanceReady>,
-    mut commands: Commands,
-    animation: Res<DeathAnimation>,
-    death_models: Query<&DeathModel>,
-    children: Query<&Children>,
-    players: Query<(), With<AnimationPlayer>>,
-    mut archers: Query<&mut Archer>,
-) {
-    let Ok(DeathModel(owner)) = death_models.get(trigger.entity()) else {
+/// `if frame < a*150 or frame > b*150 then frame = a*150`
+fn clamp_range(frame: &mut f32, a: f32, b: f32) {
+    if *frame < a * FRAME || *frame > b * FRAME {
+        *frame = a * FRAME;
+    }
+}
+
+/// Spawns an NPC (`prepareNpc`): knights at 375%, archers at 250%.
+pub fn spawn_npc(commands: &mut Commands, assets: &GameAssets, kind: NpcKind, pos: Vec3, view: Vec3, modeling: bool) {
+    let (model, scale, name) = match kind {
+        NpcKind::Knight => (&assets.knight, 3.75, "Knight"),
+        NpcKind::Archer => (&assets.archer, 2.5, "Archer"),
+    };
+    let Some(source) = &model.anim else {
         return;
     };
-    let Some(player) = children.iter_descendants(trigger.entity()).find(|e| players.contains(*e)) else {
-        return;
-    };
-    commands.entity(player).insert(AnimationGraphHandle(animation.graph.clone()));
-    if let Ok(mut archer) = archers.get_mut(*owner) {
-        archer.death_player = Some(player);
-    }
+    let model_entity = commands
+        .spawn((SceneRoot(model.scene.clone()), FrameAnim::new(source, 0.0), Transform::from_scale(Vec3::splat(scale))))
+        .observe(anim::hook)
+        .id();
+    commands
+        .spawn((
+            LevelEntity,
+            Name::new(name),
+            Npc {
+                kind,
+                state: if modeling { NpcState::Modeling } else { NpcState::Idle },
+                health: 100.0,
+                frame: 0.0,
+                flag: 0,
+                rot: 0.0,
+                view,
+                step: Vec3::ZERO,
+                shooting: false,
+                model: model_entity,
+            },
+            Body { vel_y: 0.0, grounded: false, stand_height: 0.0, step: 50.0, top: 100.0, radius: 20.0 },
+            Transform::from_translation(pos).looking_to(flat(view - pos), Vec3::Y),
+            Visibility::default(),
+        ))
+        .add_child(model_entity);
 }
 
 fn flat(v: Vec3) -> Vec3 {
@@ -160,137 +142,284 @@ fn flat(v: Vec3) -> Vec3 {
     if v.length_squared() < 1e-6 { Vec3::NEG_Z } else { v.normalize() }
 }
 
-/// `NpcFsm` + `NpcUpdatePos` + `NpcCalcGrav`/`NpcGrav`.
+/// Tiny xorshift for `rnd(n)`.
+fn rnd(seed: &mut u32, n: f32) -> f32 {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 17;
+    *seed ^= *seed << 5;
+    (*seed as f32 / u32::MAX as f32) * n
+}
+
 fn think(
-    time: Res<Time>,
-    level: Res<LevelCollision>,
-    player: Query<&Transform, (With<Player>, Without<Archer>)>,
-    mut archers: Query<(&mut Archer, &mut Body, &mut Transform)>,
-) {
-    let Ok(player) = player.get_single() else {
-        return;
-    };
-    let dt = time.delta_secs().min(0.05);
-    for (mut archer, mut body, mut transform) in &mut archers {
-        let pos = transform.translation;
-        let distance = pos.distance(player.translation);
-        let sees_player = || level.line_of_sight(pos + Vec3::Y * EYE_OFFSET, player.translation);
-        let to_player = flat(player.translation - pos);
-        let mut step = Vec3::ZERO;
-
-        archer.state = match archer.state {
-            // The original only woke between 500 and 700 units, so an archer
-            // approached from closer range never noticed the player.
-            ArcherState::Idle if distance < WAKE_DISTANCE => ArcherState::Walking,
-            ArcherState::Walking if distance > WAKE_DISTANCE => ArcherState::Idle,
-            ArcherState::Walking if distance <= ATTACK_DISTANCE && sees_player() => ArcherState::Attacking,
-            ArcherState::Walking => {
-                if distance > MIN_DISTANCE && sees_player() {
-                    step = to_player * WALK_SPEED * dt;
-                    transform.look_to(to_player, Vec3::Y);
-                }
-                ArcherState::Walking
-            }
-            ArcherState::Attacking if distance > ATTACK_DISTANCE => ArcherState::Walking,
-            ArcherState::Attacking => {
-                transform.look_to(to_player, Vec3::Y);
-                ArcherState::Attacking
-            }
-            state => state,
-        };
-
-        let mut pos = transform.translation;
-        level.move_body(&mut pos, &mut body, step, dt);
-        transform.translation = pos;
-    }
-}
-
-/// Kills the archer: it is thrown up (the original's `gravity# = rnd(100)
-/// + 400`) and swaps to the death model.
-fn kill(
-    archer: &mut Archer,
-    body: &mut Body,
-    launch: f32,
-    animation: &DeathAnimation,
-    visibility: &mut Query<&mut Visibility>,
-    players: &mut Query<&mut AnimationPlayer>,
-) {
-    archer.state = ArcherState::Dying;
-    body.vel_y = launch;
-    body.grounded = false;
-    if let Ok(mut v) = visibility.get_mut(archer.idle_model) {
-        *v = Visibility::Hidden;
-    }
-    if let Ok(mut v) = visibility.get_mut(archer.death_model) {
-        *v = Visibility::Inherited;
-    }
-    if let Some(mut player) = archer.death_player.and_then(|e| players.get_mut(e).ok()) {
-        player.play(animation.node);
-    }
-}
-
-/// A bolt landing within reach kills outright; the dagger wounds first and
-/// kills on the second hit. A wounded archer staggers and gives chase.
-#[allow(clippy::too_many_arguments)]
-fn take_hits(
     mut commands: Commands,
     time: Res<Time>,
-    asset_server: Res<AssetServer>,
-    mut strikes: EventReader<LightningStrike>,
-    mut daggers: EventReader<DaggerHit>,
-    animation: Res<DeathAnimation>,
-    mut archers: Query<(&mut Archer, &mut Body, &Transform)>,
-    mut visibility: Query<&mut Visibility>,
-    mut players: Query<&mut AnimationPlayer>,
+    assets: Res<GameAssets>,
+    level: Res<LevelCollision>,
+    weapon: Res<Weapon>,
+    input: Res<PlayerInput>,
+    mut player: Query<(&mut Player, &Transform), Without<Npc>>,
+    mut npcs: Query<(Entity, &mut Npc, &mut Body, &Transform)>,
+    mut models: Query<(&mut FrameAnim, &mut Visibility)>,
+    mut seed: Local<u32>,
 ) {
-    let jitter = (time.elapsed_secs() * 7919.0).fract() * 100.0;
-    for strike in strikes.read() {
-        for (mut archer, mut body, transform) in &mut archers {
-            let (min, max) = Archer::hit_box(transform.translation);
-            let reach = Vec3::splat(strike.half_extent);
-            let (smin, smax) = (strike.point - reach, strike.point + reach);
-            let hit = min.cmplt(smax).all() && max.cmpgt(smin).all();
-            if archer.alive() && hit {
-                kill(&mut archer, &mut body, 400.0 + jitter, &animation, &mut visibility, &mut players);
+    let Ok((mut player, player_t)) = player.get_single_mut() else {
+        return;
+    };
+    if *seed == 0 {
+        *seed = 0x9E37_79B9;
+    }
+    let eye = player_t.translation;
+    let dt = time.delta_secs().min(0.05);
+    let weapon_hit = weapon.hit_box();
+    // Other NPCs' boxes for the avoidance rays.
+    let boxes: Vec<(Entity, Aabb3)> = npcs
+        .iter()
+        .filter(|(_, n, _, _)| n.state != NpcState::Dead)
+        .map(|(e, _, _, t)| (e, Npc::hit_box(t.translation)))
+        .collect();
+
+    for (entity, mut npc, mut body, transform) in &mut npcs {
+        let npc = &mut *npc;
+        npc.shooting = false;
+        npc.step = Vec3::ZERO;
+        let pos = transform.translation;
+
+        // Debug keys: K knights / L archers in and out of "modeling".
+        let toggle = match npc.kind {
+            NpcKind::Knight => input.model_knights,
+            NpcKind::Archer => input.model_archers,
+        };
+        if toggle && npc.alive() {
+            npc.state = if npc.state == NpcState::Modeling { NpcState::Idle } else { NpcState::Modeling };
+        }
+
+        let fwd = flat(npc.view - pos);
+        let left = Vec3::new(fwd.z, 0.0, -fwd.x);
+        let distance = pos.distance(eye);
+        let chest = pos + Vec3::Y * 75.0;
+
+        // Steering away from walls and other NPCs within 50 units.
+        let mut side = Vec3::ZERO;
+        let mut back = Vec3::ZERO;
+        if npc.state == NpcState::Walking {
+            let near = |d: Option<f32>| d.is_some_and(|d| d > 0.0 && d < 50.0);
+            let waist = pos + Vec3::Y * 50.0;
+            for (other, b) in &boxes {
+                if *other == entity {
+                    continue;
+                }
+                if near(ray_box(waist, left, 50.0, *b)) {
+                    side = -left;
+                }
+                if near(ray_box(waist, -left, 50.0, *b)) {
+                    side = left;
+                }
+                if near(ray_box(waist, fwd, 50.0, *b)) {
+                    back = -fwd * 2.0;
+                }
+            }
+            if near(level.ray(chest, left, 50.0)) {
+                side = -left;
+            }
+            if near(level.ray(chest, -left, 50.0)) {
+                side = left;
+            }
+            if near(level.ray(chest, fwd, 50.0)) {
+                back = -fwd * 2.0;
             }
         }
-    }
-    for DaggerHit(entity) in daggers.read() {
-        let Ok((mut archer, mut body, _)) = archers.get_mut(*entity) else {
-            continue;
-        };
-        if !archer.alive() {
-            continue;
+        let avoid = (side + back) * 150.0 * dt;
+
+        // Weapon hits (`object collision (knife | spike | 543, npc)`).
+        let vulnerable = !matches!(
+            npc.state,
+            NpcState::GettingHit | NpcState::Dying | NpcState::Dead | NpcState::Modeling
+        );
+        if let Some((kind, hit)) = weapon_hit
+            && vulnerable
+            && aabb_overlap(hit, Npc::hit_box(pos))
+        {
+            match kind {
+                HitKind::Dagger => {
+                    npc.frame = match npc.kind {
+                        NpcKind::Archer => 31.0 * FRAME,
+                        NpcKind::Knight => 76.0 * FRAME,
+                    };
+                    npc.state = NpcState::GettingHit;
+                    play(&mut commands, &assets.sounds.knife);
+                    let damage = match npc.kind {
+                        NpcKind::Archer => rnd(&mut seed, 40.0) + 20.0,
+                        NpcKind::Knight => rnd(&mut seed, 20.0) + 20.0,
+                    };
+                    npc.health -= damage;
+                    if npc.health <= 0.0 {
+                        play(&mut commands, &assets.sounds.scream);
+                        npc.state = NpcState::Dying;
+                    }
+                }
+                HitKind::Bone => {
+                    play(&mut commands, &assets.sounds.knife);
+                    play(&mut commands, &assets.sounds.yell);
+                    npc.health = 0.0;
+                    npc.state = NpcState::Dying;
+                }
+                HitKind::Lightning => {
+                    // `gravity# = rnd(100) + 400`: thrown into the air.
+                    body.vel_y = rnd(&mut seed, 100.0) + 400.0;
+                    body.grounded = false;
+                    play(&mut commands, &assets.sounds.scream);
+                    npc.health = 0.0;
+                    npc.state = NpcState::Dying;
+                }
+            }
         }
-        archer.wounds += 1;
-        commands.spawn((
-            AudioPlayer::new(asset_server.load("sounds/archer_grunt.wav")),
-            PlaybackSettings::DESPAWN,
-        ));
-        if archer.wounds >= 2 {
-            kill(&mut archer, &mut body, 250.0 + jitter, &animation, &mut visibility, &mut players);
-        } else {
-            body.vel_y = 160.0;
-            body.grounded = false;
-            if archer.state == ArcherState::Idle {
-                archer.state = ArcherState::Walking;
+
+        let walk_toward_player = |npc: &mut Npc| {
+            npc.view = Vec3::new(eye.x, npc.view.y, eye.z);
+            npc.step = flat(eye - pos) * 150.0 * dt + avoid;
+        };
+
+        match (npc.kind, npc.state) {
+            (NpcKind::Knight, NpcState::Idle) => {
+                clamp_range(&mut npc.frame, 11.0, 30.0);
+                npc.frame += 37.5 * 30.0 * dt;
+                if distance < 700.0 {
+                    npc.state = NpcState::Walking;
+                }
+            }
+            (NpcKind::Archer, NpcState::Idle) => {
+                clamp_range(&mut npc.frame, 21.0, 30.0);
+                npc.frame += 37.5 * 30.0 * dt;
+                if distance < 1000.0 {
+                    npc.state = NpcState::Attacking;
+                }
+            }
+            (NpcKind::Knight, NpcState::Walking) => {
+                clamp_range(&mut npc.frame, 31.0, 50.0);
+                npc.frame += 150.0 * 30.0 * dt;
+                walk_toward_player(npc);
+                if distance <= 100.0 {
+                    npc.state = NpcState::Attacking;
+                }
+                if distance > 1000.0 {
+                    npc.state = NpcState::Idle;
+                }
+            }
+            (NpcKind::Archer, NpcState::Walking) => {
+                clamp_range(&mut npc.frame, 11.0, 20.0);
+                npc.frame += 37.5 * 30.0 * dt;
+                walk_toward_player(npc);
+            }
+            (NpcKind::Knight, NpcState::Attacking) => {
+                // Swings up to frame 75 and back down to 50, 15 damage at
+                // each end (with the original's `flag` quirk, the swing
+                // never stops short at frame 53).
+                let mut swing = |npc: &mut Npc, frame: f32, flag: u8| {
+                    npc.frame = frame * FRAME;
+                    npc.flag = flag;
+                    play(&mut commands, &assets.sounds.sword);
+                    play(&mut commands, &assets.sounds.grunt);
+                    player.health -= 15.0;
+                };
+                if npc.frame <= 50.0 * FRAME {
+                    swing(npc, 50.0, 0);
+                }
+                if npc.frame >= 75.0 * FRAME {
+                    swing(npc, 72.0, 1);
+                }
+                let dir = if npc.flag == 1 { -1.0 } else { 1.0 };
+                npc.frame += dir * 150.0 * 30.0 * dt;
+                npc.view = Vec3::new(eye.x, npc.view.y, eye.z);
+                if distance >= 100.0 {
+                    npc.state = NpcState::Walking;
+                }
+                if distance >= 750.0 {
+                    npc.state = NpcState::Idle;
+                }
+            }
+            (NpcKind::Archer, NpcState::Attacking) => {
+                npc.view = Vec3::new(eye.x, npc.view.y, eye.z);
+                if level.line_of_sight(chest, eye) {
+                    clamp_range(&mut npc.frame, 63.0, 76.0);
+                    npc.frame += 39.0 * 30.0 * dt;
+                    npc.shooting = true;
+                }
+                if distance > 1200.0 {
+                    npc.state = NpcState::Idle;
+                }
+            }
+            (NpcKind::Archer, NpcState::GettingHit) => {
+                if npc.frame < 35.0 * FRAME {
+                    npc.frame += 65.0 * 30.0 * dt;
+                } else {
+                    npc.state = NpcState::Attacking;
+                }
+            }
+            (NpcKind::Knight, NpcState::GettingHit) => {
+                if npc.frame < 79.0 * FRAME {
+                    npc.frame += 65.0 * 30.0 * dt;
+                } else {
+                    npc.state = NpcState::Walking;
+                }
+            }
+            (NpcKind::Archer, NpcState::Dying) => {
+                clamp_range(&mut npc.frame, 31.0, 62.0);
+                npc.frame += 65.0 * 30.0 * dt;
+                if npc.frame >= 62.0 * FRAME {
+                    npc.frame = 62.0 * FRAME;
+                    npc.rot = 10.0;
+                    npc.state = NpcState::Dead;
+                }
+            }
+            (NpcKind::Knight, NpcState::Dying) => {
+                clamp_range(&mut npc.frame, 76.0, 100.0);
+                let speed = if npc.frame < 80.0 * FRAME { 15.0 } else { 65.0 };
+                npc.frame += speed * 30.0 * dt;
+                if npc.frame >= 100.0 * FRAME {
+                    npc.frame = 100.0 * FRAME;
+                    npc.rot = 10.0;
+                    npc.state = NpcState::Dead;
+                }
+            }
+            (_, NpcState::Dead) => {
+                npc.rot -= dt;
+                if input.resurrect {
+                    // `keystate(19)`: the dead rise again.
+                    npc.state = NpcState::Idle;
+                    npc.health = 100.0;
+                    body.vel_y = 100.0;
+                    body.grounded = false;
+                }
+            }
+            (_, NpcState::Modeling) => {
+                npc.frame += 37.5 * 30.0 * dt;
+                if npc.frame > npc.last_frame() {
+                    npc.frame = 0.0;
+                }
+            }
+        }
+
+        if let Ok((mut anim, mut vis)) = models.get_mut(npc.model) {
+            anim.ticks = npc.frame;
+            // swapNpc: a corpse that has rotted away is removed.
+            let gone = npc.state == NpcState::Dead && npc.rot <= 0.0;
+            let want = if gone { Visibility::Hidden } else { Visibility::Inherited };
+            if *vis != want {
+                *vis = want;
             }
         }
     }
 }
 
-/// `if frame >= total object frames(...) then currentState = 10`
-fn finish_dying(animation: Res<DeathAnimation>, players: Query<&AnimationPlayer>, mut archers: Query<&mut Archer>) {
-    for mut archer in &mut archers {
-        if archer.state != ArcherState::Dying {
-            continue;
-        }
-        let done = archer
-            .death_player
-            .and_then(|e| players.get(e).ok())
-            .is_none_or(|p| p.animation(animation.node).is_none_or(|a| a.is_finished()));
-        if done {
-            archer.state = ArcherState::Dead;
-        }
+/// NpcCalcGrav / NpcGrav / NpcUpdatePos, plus facing the view point.
+fn move_npcs(time: Res<Time>, level: Res<LevelCollision>, mut npcs: Query<(&Npc, &mut Body, &mut Transform)>) {
+    let dt = time.delta_secs().min(0.05);
+    for (npc, mut body, mut t) in &mut npcs {
+        let step = if npc.state == NpcState::Walking { npc.step } else { Vec3::ZERO };
+        let mut pos = t.translation;
+        level.move_body(&mut pos, &mut body, step, dt);
+        t.translation = pos;
+        let face = flat(npc.view - pos);
+        t.look_to(face, Vec3::Y);
     }
 }

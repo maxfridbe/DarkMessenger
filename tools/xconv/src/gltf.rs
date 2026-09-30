@@ -288,8 +288,8 @@ impl Builder {
             .find_map(|p| resolve_case(&p))
             .ok_or("file not found")?;
         let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-        if ext == "jpg" || ext == "jpeg" {
+        // Trust the bytes, not the name: some 2003 textures called .jpg are BMPs.
+        if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
             return Ok((bytes, "image/jpeg"));
         }
         let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;

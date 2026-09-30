@@ -1,6 +1,6 @@
 //! On-screen touch controls: a floating move stick on the left, drag
-//! anywhere else to look, and buttons for chant, dagger, jump, bolt swap
-//! and pause.
+//! anywhere else to look, and buttons for chant (CAST), next weapon, jump,
+//! use (the book) and pause.
 //!
 //! They show on Android by default and on any platform as soon as the
 //! screen is touched, and hide again when a keyboard key is pressed or a
@@ -8,7 +8,7 @@
 
 use crate::GameState;
 use crate::player::{InputSet, PlayerInput, PlayerSet, read_input};
-use crate::spell::Spell;
+use crate::weapons::{Weapon, WeaponKind};
 use bevy::prelude::*;
 use bevy::utils::HashMap;
 use bevy::window::PrimaryWindow;
@@ -46,33 +46,33 @@ const LOOK_SENSITIVITY: f32 = 0.005;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Button {
     Cast,
-    Throw,
+    Use,
     Jump,
-    Swap,
+    Weapon,
     Pause,
 }
 
 impl Button {
-    const ALL: [Button; 5] = [Button::Cast, Button::Throw, Button::Jump, Button::Swap, Button::Pause];
+    const ALL: [Button; 5] = [Button::Cast, Button::Use, Button::Jump, Button::Weapon, Button::Pause];
 
     /// Diameter and centre offset: x from the right edge, y from the bottom
     /// (or from the top for Pause).
     fn layout(self) -> (f32, Vec2) {
         match self {
-            Button::Cast => (112.0, Vec2::new(36.0 + 56.0, 40.0 + 56.0)),
-            Button::Throw => (84.0, Vec2::new(190.0, 180.0)),
-            Button::Jump => (80.0, Vec2::new(170.0 + 40.0, 28.0 + 40.0)),
-            Button::Swap => (64.0, Vec2::new(44.0 + 32.0, 176.0 + 32.0)),
-            Button::Pause => (52.0, Vec2::new(20.0 + 26.0, 20.0 + 26.0)),
+            Button::Cast => (112.0, Vec2::new(76.0 + 56.0, 40.0 + 56.0)),
+            Button::Use => (72.0, Vec2::new(230.0, 180.0)),
+            Button::Jump => (80.0, Vec2::new(210.0 + 40.0, 28.0 + 40.0)),
+            Button::Weapon => (72.0, Vec2::new(84.0 + 36.0, 176.0 + 36.0)),
+            Button::Pause => (52.0, Vec2::new(70.0 + 26.0, 20.0 + 26.0)),
         }
     }
 
     fn label(self) -> &'static str {
         match self {
             Button::Cast => "CAST",
-            Button::Throw => "DAGGER",
+            Button::Use => "USE",
             Button::Jump => "JUMP",
-            Button::Swap => "BOLT",
+            Button::Weapon => "WEAPON",
             Button::Pause => "II",
         }
     }
@@ -169,7 +169,7 @@ fn spawn_ui(mut commands: Commands) {
                         TextColor(Color::srgba(0.95, 0.9, 1.0, 0.85)),
                         TextLayout::new_with_justify(JustifyText::Center),
                     ));
-                    if button == Button::Swap {
+                    if button == Button::Weapon {
                         label.insert(SwapLabel);
                     }
                 });
@@ -202,7 +202,6 @@ fn touch_input(
     touches: Res<Touches>,
     window: Query<&Window, With<PrimaryWindow>>,
     mut input: ResMut<PlayerInput>,
-    mut spell: ResMut<Spell>,
     mut next: ResMut<NextState<GameState>>,
     mut roles: Local<HashMap<u64, Role>>,
 ) {
@@ -220,8 +219,8 @@ fn touch_input(
         };
         match role {
             Role::Button(Button::Jump) => input.jump = true,
-            Role::Button(Button::Throw) => input.throw = true,
-            Role::Button(Button::Swap) => spell.toggle_alignment(),
+            Role::Button(Button::Use) => input.use_book = true,
+            Role::Button(Button::Weapon) => input.cycle = 1,
             Role::Button(Button::Pause) => next.set(GameState::Paused),
             _ => {}
         }
@@ -247,7 +246,7 @@ fn update_ui(
     controls: Res<TouchControls>,
     state: Res<State<GameState>>,
     touches: Res<Touches>,
-    spell: Res<Spell>,
+    weapon: Res<Weapon>,
     window: Query<&Window, With<PrimaryWindow>>,
     mut root: Query<&mut Visibility, With<TouchRoot>>,
     mut base: Query<&mut Node, (With<StickBase>, Without<StickKnob>)>,
@@ -295,7 +294,8 @@ fn update_ui(
         bg.0 = Color::srgba(0.35, 0.2, 0.55, alpha);
     }
     if let Ok(mut label) = swap_label.get_single_mut() {
-        let text = format!("BOLT\n{}", &spell.alignment.name()[..1]);
+        let key = WeaponKind::ALL.iter().position(|k| *k == weapon.kind).unwrap_or(0) + 1;
+        let text = format!("WEAPON\n{key}");
         if label.0 != text {
             label.0 = text;
         }

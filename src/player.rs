@@ -1,8 +1,13 @@
-//! `input.dba` + the player half of `main.dba`: first-person mouse look,
-//! WASD movement, jumping and gravity. The camera *is* the player's eye.
+//! `input.dba` + `player.dba`: first-person mouse look, WASD movement,
+//! jumping, gravity and terrain following. The camera *is* the player's eye.
 //! Gamepads work too; touch input is layered on top by `touch.rs`.
+//!
+//! Keys (checkKey): WASD move, Space jump, 1–4 weapons, click chant, E use
+//! the book, H heal (a debug key the original shipped with), R resurrect
+//! dead NPCs, K / L toggle knights / archers into their "modeling" pose.
 
 use crate::collision::{Body, LevelCollision};
+use crate::weapons::WeaponKind;
 use crate::{GameState, db};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
@@ -20,7 +25,8 @@ impl Plugin for PlayerPlugin {
             .add_systems(OnExit(GameState::Playing), release_cursor)
             .configure_sets(Update, InputSet.before(look).in_set(PlayerSet))
             .add_systems(Update, read_input.in_set(InputSet).run_if(in_state(GameState::Playing)))
-            .add_systems(Update, (look, walk).chain().in_set(PlayerSet).run_if(in_state(GameState::Playing)))
+            .add_systems(Update, (look, walk, heal).chain().in_set(PlayerSet).run_if(in_state(GameState::Playing)))
+            .add_systems(OnEnter(GameState::Intro), new_game)
             .add_systems(Update, (pause_on_escape, regrab_on_click).run_if(in_state(GameState::Playing)));
     }
 }
@@ -35,13 +41,13 @@ pub struct PlayerSet;
 pub struct InputSet;
 
 pub const SPAWN: Vec3 = db(0.0, 100.0, 0.0);
-pub const MAX_HEALTH: i32 = 100;
+pub const MAX_HEALTH: f32 = 100.0;
 /// `speed# = 250.0`
 const MOVE_SPEED: f32 = 250.0;
 /// `thePlayer.gravity# = 300` on jump.
 const JUMP_SPEED: f32 = 300.0;
-/// The original kept the eye ~80–87 units above the floor.
-pub const EYE_HEIGHT: f32 = 85.0;
+/// checkPCGravity snaps the eye to `floor + 80`.
+pub const EYE_HEIGHT: f32 = 80.0;
 /// `theCamera.phi#` was clamped to ±80 degrees.
 const PITCH_LIMIT: f32 = 80.0_f32.to_radians();
 const MOUSE_SENSITIVITY: f32 = 0.0025;
@@ -51,7 +57,7 @@ const STICK_DEADZONE: f32 = 0.15;
 
 #[derive(Component)]
 pub struct Player {
-    pub health: i32,
+    pub health: f32,
     /// Radians; 0 looks down +X like the original `theCamera.theta# = 0`.
     pub yaw: f32,
     pub pitch: f32,
@@ -76,8 +82,19 @@ pub struct PlayerInput {
     pub jump: bool,
     /// Held: keep chanting whenever the cast delay allows (`mouseclick() = 1`).
     pub cast: bool,
-    /// Throw the floating dagger (edge-triggered).
-    pub throw: bool,
+    /// Weapon picked this frame (keys 1–4).
+    pub select: Option<WeaponKind>,
+    /// Step through the weapons (+1 / -1; gamepad and touch).
+    pub cycle: i32,
+    /// E: open or close the book.
+    pub use_book: bool,
+    /// H held: heal.
+    pub heal: bool,
+    /// R: raise the dead NPCs.
+    pub resurrect: bool,
+    /// K / L: toggle knights / archers into "modeling".
+    pub model_knights: bool,
+    pub model_archers: bool,
     /// False until the click/tap/button that started or resumed play has
     /// been released, so it doesn't also start a chant.
     pub armed: bool,
@@ -130,10 +147,19 @@ pub fn read_input(
     input.look = motion.delta * MOUSE_SENSITIVITY;
     input.jump = keys.pressed(KeyCode::Space);
     let mut cast = buttons.pressed(MouseButton::Left);
-    input.throw = buttons.just_pressed(MouseButton::Right) || keys.just_pressed(KeyCode::KeyF);
+    input.select = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4]
+        .iter()
+        .position(|k| keys.just_pressed(*k))
+        .map(|i| WeaponKind::ALL[i]);
+    input.cycle = keys.any_just_pressed([KeyCode::Tab, KeyCode::KeyQ]) as i32;
+    input.use_book = keys.just_pressed(KeyCode::KeyE);
+    input.heal = keys.pressed(KeyCode::KeyH);
+    input.resurrect = keys.just_pressed(KeyCode::KeyR);
+    input.model_knights = keys.just_pressed(KeyCode::KeyK);
+    input.model_archers = keys.just_pressed(KeyCode::KeyL);
 
     // Left stick moves, right stick looks, A / cross jumps, right trigger
-    // chants, right bumper throws the dagger.
+    // chants, B uses, bumpers or X / Y change weapon.
     let deadzone = |v: Vec2| if v.length() < STICK_DEADZONE { Vec2::ZERO } else { v };
     let mut all_released = !cast;
     for pad in &gamepads {
@@ -142,7 +168,13 @@ pub fn read_input(
         input.look += Vec2::new(look.x, -look.y) * GAMEPAD_LOOK_SPEED * time.delta_secs();
         input.jump |= pad.pressed(GamepadButton::South);
         let pad_cast = pad.pressed(GamepadButton::RightTrigger2);
-        input.throw |= pad.just_pressed(GamepadButton::RightTrigger);
+        input.use_book |= pad.just_pressed(GamepadButton::East);
+        if pad.any_just_pressed([GamepadButton::RightTrigger, GamepadButton::North]) {
+            input.cycle = 1;
+        }
+        if pad.any_just_pressed([GamepadButton::LeftTrigger, GamepadButton::West]) {
+            input.cycle = -1;
+        }
         cast |= pad_cast;
         all_released &= !pad_cast && !pad.pressed(GamepadButton::South) && !pad.pressed(GamepadButton::Start);
     }
@@ -187,6 +219,24 @@ fn walk(
         body.vel_y = 0.0;
     }
     transform.translation = pos;
+}
+
+/// `if keystate(35) = 1 and health < 100 : health + 1` (per loop).
+fn heal(time: Res<Time>, input: Res<PlayerInput>, mut player: Query<&mut Player>) {
+    if input.heal
+        && let Ok(mut p) = player.get_single_mut()
+    {
+        p.health = (p.health + 60.0 * time.delta_secs()).min(MAX_HEALTH);
+    }
+}
+
+/// Death or a fresh start: full health, spawn point, eyes forward.
+fn new_game(mut player: Query<(&mut Player, &mut Body, &mut Transform)>) {
+    if let Ok((mut p, mut body, mut t)) = player.get_single_mut() {
+        *p = Player::new();
+        *body = Player::body();
+        t.translation = SPAWN;
+    }
 }
 
 fn set_grab(window: &mut Window, grab: bool) {
