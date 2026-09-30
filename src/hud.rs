@@ -163,7 +163,7 @@ pub const CONTROLS: &str = "WASD - move    Mouse - look    Space - jump    E - o
 1 dagger   2 spread lightning   3 power lightning   4 bone spike\n\
 Hold left click - chant    Esc - pause    F3 - debug    H - heal\n\n\
 Gamepad: sticks move / look, A jump, RT chant, B use, bumpers weapon, Start pause\n\
-Touch: left stick walks, drag elsewhere to look, CAST, WEAPON, JUMP, USE";
+Touch: left stick walks, drag elsewhere to look, CAST / JUMP / USE, weapons 1-4 at the top, HEAL, RAISE";
 
 /// The YY.MMDD.## version, carried as semver build metadata (see
 /// increment_version.sh).

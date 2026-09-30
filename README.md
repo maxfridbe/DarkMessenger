@@ -29,7 +29,7 @@ The game opens like the original: the D2 model turning in the dark to `darkness.
 | H | heal (a debug key the original shipped with); R raises the dead; K / L put knights / archers into their "modeling" pose |
 | F3 | debug readout (the original `print`ed this every frame) |
 | Gamepad (desktop / web) | left stick move, right stick look, A jump, RT use weapon, B book, bumpers or X / Y change weapon, Start pause |
-| Touch | on-screen stick (left) to walk, drag elsewhere to look, CAST, WEAPON, JUMP, USE, II (pause) |
+| Touch | on-screen stick (left) to walk, drag elsewhere to look; CAST, JUMP, USE bottom right; weapons 1–4 across the top; HEAL (hold) and RAISE top left; II (pause) top right |
 
 The left (red) bar is the recharge, or while the dagger is out, how far away it is. The right (blue) bar is health. Knights wake within 700 units, march up and swing for 15; archers shoot from 1000 units for 10 when they can see you. Lightning and the spike kill outright; the dagger takes a few hits.
 

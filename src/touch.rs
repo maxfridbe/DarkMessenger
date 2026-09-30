@@ -1,6 +1,7 @@
-//! On-screen touch controls: a floating move stick on the left, drag
-//! anywhere else to look, and buttons for chant (CAST), next weapon, jump,
-//! use (the book) and pause.
+//! On-screen touch controls, covering everything the keyboard does:
+//! a floating move stick on the left, drag anywhere else to look, CAST /
+//! JUMP / USE (the book) bottom right, the four weapons (keys 1–4) across
+//! the top, HEAL (H, hold) and RAISE (R) top left, and pause top right.
 //!
 //! They show on Android by default and on any platform as soon as the
 //! screen is touched, and hide again when a keyboard key is pressed or a
@@ -48,22 +49,50 @@ enum Button {
     Cast,
     Use,
     Jump,
-    Weapon,
     Pause,
+    Weapon(WeaponKind),
+    Heal,
+    Raise,
+}
+
+/// Which screen corner / edge a button's offset is measured from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    BottomRight,
+    TopRight,
+    TopCenter,
+    TopLeft,
 }
 
 impl Button {
-    const ALL: [Button; 5] = [Button::Cast, Button::Use, Button::Jump, Button::Weapon, Button::Pause];
+    const ALL: [Button; 10] = [
+        Button::Cast,
+        Button::Use,
+        Button::Jump,
+        Button::Pause,
+        Button::Weapon(WeaponKind::Dagger),
+        Button::Weapon(WeaponKind::Spread),
+        Button::Weapon(WeaponKind::Power),
+        Button::Weapon(WeaponKind::Bone),
+        Button::Heal,
+        Button::Raise,
+    ];
 
-    /// Diameter and centre offset: x from the right edge, y from the bottom
-    /// (or from the top for Pause).
-    fn layout(self) -> (f32, Vec2) {
+    /// Diameter, anchor and centre offset from the anchor (x inward from a
+    /// side edge or right of centre, y inward from the top / bottom edge).
+    fn layout(self) -> (f32, Anchor, Vec2) {
+        use Anchor::*;
         match self {
-            Button::Cast => (112.0, Vec2::new(76.0 + 56.0, 40.0 + 56.0)),
-            Button::Use => (72.0, Vec2::new(230.0, 180.0)),
-            Button::Jump => (80.0, Vec2::new(210.0 + 40.0, 28.0 + 40.0)),
-            Button::Weapon => (72.0, Vec2::new(84.0 + 36.0, 176.0 + 36.0)),
-            Button::Pause => (52.0, Vec2::new(70.0 + 26.0, 20.0 + 26.0)),
+            Button::Cast => (112.0, BottomRight, Vec2::new(76.0 + 56.0, 40.0 + 56.0)),
+            Button::Use => (72.0, BottomRight, Vec2::new(230.0, 180.0)),
+            Button::Jump => (80.0, BottomRight, Vec2::new(210.0 + 40.0, 28.0 + 40.0)),
+            Button::Pause => (52.0, TopRight, Vec2::new(70.0 + 26.0, 20.0 + 26.0)),
+            Button::Weapon(kind) => {
+                let i = WeaponKind::ALL.iter().position(|k| *k == kind).unwrap_or(0) as f32;
+                (64.0, TopCenter, Vec2::new((i - 1.5) * 74.0, 20.0 + 32.0))
+            }
+            Button::Heal => (56.0, TopLeft, Vec2::new(70.0 + 28.0, 20.0 + 28.0)),
+            Button::Raise => (56.0, TopLeft, Vec2::new(136.0 + 28.0, 20.0 + 28.0)),
         }
     }
 
@@ -72,18 +101,60 @@ impl Button {
             Button::Cast => "CAST",
             Button::Use => "USE",
             Button::Jump => "JUMP",
-            Button::Weapon => "WEAPON",
             Button::Pause => "II",
+            Button::Weapon(WeaponKind::Dagger) => "1\nDAGGER",
+            Button::Weapon(WeaponKind::Spread) => "2\nSPREAD",
+            Button::Weapon(WeaponKind::Power) => "3\nPOWER",
+            Button::Weapon(WeaponKind::Bone) => "4\nSPIKE",
+            Button::Heal => "HEAL",
+            Button::Raise => "RAISE",
+        }
+    }
+
+    fn font_size(self) -> f32 {
+        match self {
+            Button::Cast => 20.0,
+            Button::Weapon(_) | Button::Heal | Button::Raise => 11.0,
+            _ => 15.0,
         }
     }
 
     /// Centre in window coordinates (origin top-left).
     fn center(self, window: Vec2) -> Vec2 {
-        let (_, offset) = self.layout();
-        match self {
-            Button::Pause => Vec2::new(window.x - offset.x, offset.y),
-            _ => Vec2::new(window.x - offset.x, window.y - offset.y),
+        let (_, anchor, o) = self.layout();
+        match anchor {
+            Anchor::BottomRight => Vec2::new(window.x - o.x, window.y - o.y),
+            Anchor::TopRight => Vec2::new(window.x - o.x, o.y),
+            Anchor::TopCenter => Vec2::new(window.x / 2.0 + o.x, o.y),
+            Anchor::TopLeft => Vec2::new(o.x, o.y),
         }
+    }
+
+    /// UI node placing the button at its anchor.
+    fn node(self) -> Node {
+        let (size, anchor, o) = self.layout();
+        let mut node = circle(size);
+        let half = size / 2.0;
+        match anchor {
+            Anchor::BottomRight => {
+                node.right = Val::Px(o.x - half);
+                node.bottom = Val::Px(o.y - half);
+            }
+            Anchor::TopRight => {
+                node.right = Val::Px(o.x - half);
+                node.top = Val::Px(o.y - half);
+            }
+            Anchor::TopCenter => {
+                node.left = Val::Percent(50.0);
+                node.margin.left = Val::Px(o.x - half);
+                node.top = Val::Px(o.y - half);
+            }
+            Anchor::TopLeft => {
+                node.left = Val::Px(o.x - half);
+                node.top = Val::Px(o.y - half);
+            }
+        }
+        node
     }
 
     fn hit(self, window: Vec2, point: Vec2) -> bool {
@@ -111,9 +182,6 @@ struct StickKnob;
 
 #[derive(Component)]
 struct ButtonNode(Button);
-
-#[derive(Component)]
-struct SwapLabel;
 
 fn circle(size: f32) -> Node {
     Node {
@@ -154,25 +222,12 @@ fn spawn_ui(mut commands: Commands) {
             ));
 
             for button in Button::ALL {
-                let (size, offset) = button.layout();
-                let mut node = Node { right: Val::Px(offset.x - size / 2.0), ..circle(size) };
-                if button == Button::Pause {
-                    node.top = Val::Px(offset.y - size / 2.0);
-                } else {
-                    node.bottom = Val::Px(offset.y - size / 2.0);
-                }
-                let mut entity = root.spawn((ButtonNode(button), node, ring, fill, BorderRadius::MAX));
-                entity.with_children(|b| {
-                    let mut label = b.spawn((
-                        Text::new(button.label()),
-                        TextFont { font_size: if button == Button::Cast { 20.0 } else { 15.0 }, ..default() },
-                        TextColor(Color::srgba(0.95, 0.9, 1.0, 0.85)),
-                        TextLayout::new_with_justify(JustifyText::Center),
-                    ));
-                    if button == Button::Weapon {
-                        label.insert(SwapLabel);
-                    }
-                });
+                root.spawn((ButtonNode(button), button.node(), ring, fill, BorderRadius::MAX)).with_child((
+                    Text::new(button.label()),
+                    TextFont { font_size: button.font_size(), ..default() },
+                    TextColor(Color::srgba(0.95, 0.9, 1.0, 0.85)),
+                    TextLayout::new_with_justify(JustifyText::Center),
+                ));
             }
         });
 }
@@ -220,7 +275,8 @@ fn touch_input(
         match role {
             Role::Button(Button::Jump) => input.jump = true,
             Role::Button(Button::Use) => input.use_book = true,
-            Role::Button(Button::Weapon) => input.cycle = 1,
+            Role::Button(Button::Weapon(kind)) => input.select = Some(kind),
+            Role::Button(Button::Raise) => input.resurrect = true,
             Role::Button(Button::Pause) => next.set(GameState::Paused),
             _ => {}
         }
@@ -236,6 +292,7 @@ fn touch_input(
             }
             Some(Role::Look) => input.look += touch.delta() * LOOK_SENSITIVITY,
             Some(Role::Button(Button::Cast)) => input.cast |= input.armed,
+            Some(Role::Button(Button::Heal)) => input.heal = true,
             _ => {}
         }
     }
@@ -251,8 +308,7 @@ fn update_ui(
     mut root: Query<&mut Visibility, With<TouchRoot>>,
     mut base: Query<&mut Node, (With<StickBase>, Without<StickKnob>)>,
     mut knob: Query<&mut Node, (With<StickKnob>, Without<StickBase>)>,
-    mut buttons: Query<(&ButtonNode, &mut BackgroundColor)>,
-    mut swap_label: Query<&mut Text, With<SwapLabel>>,
+    mut buttons: Query<(&ButtonNode, &mut BackgroundColor, &mut BorderColor)>,
 ) {
     let show = controls.visible && *state.get() == GameState::Playing;
     if let Ok(mut v) = root.get_single_mut() {
@@ -288,16 +344,15 @@ fn update_ui(
         node.top = Val::Px(corner + offset.y);
     }
 
-    for (button, mut bg) in &mut buttons {
+    for (button, mut bg, mut border) in &mut buttons {
         let held = touches.iter().any(|t| button.0.hit(size, t.start_position()));
-        let alpha = if held { 0.55 } else { 0.25 };
+        // The chosen weapon is lit; the dagger button dims while it's thrown.
+        let (selected, unavailable) = match button.0 {
+            Button::Weapon(kind) => (kind == weapon.kind, kind == WeaponKind::Dagger && !weapon.has_dagger),
+            _ => (false, false),
+        };
+        let alpha = if held || selected { 0.55 } else if unavailable { 0.08 } else { 0.25 };
         bg.0 = Color::srgba(0.35, 0.2, 0.55, alpha);
-    }
-    if let Ok(mut label) = swap_label.get_single_mut() {
-        let key = WeaponKind::ALL.iter().position(|k| *k == weapon.kind).unwrap_or(0) + 1;
-        let text = format!("WEAPON\n{key}");
-        if label.0 != text {
-            label.0 = text;
-        }
+        border.0 = if selected { Color::srgba(1.0, 0.9, 0.5, 0.9) } else { Color::srgba(0.85, 0.75, 1.0, if unavailable { 0.2 } else { 0.45 }) };
     }
 }

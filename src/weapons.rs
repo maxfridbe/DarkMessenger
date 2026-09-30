@@ -43,7 +43,7 @@ impl Plugin for WeaponsPlugin {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WeaponSet;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WeaponKind {
     Dagger,
     Spread,
