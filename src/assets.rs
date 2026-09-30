@@ -25,19 +25,28 @@ pub struct Model {
     pub anim: Option<AnimSource>,
 }
 
+/// A sound effect and the volume it plays at. The 2003 effects were
+/// mastered far louder than the music (the chant and yell near -10 LUFS
+/// against the wind's -30), so each is trimmed to sit in the mix.
+pub struct Sfx {
+    pub handle: Handle<AudioSource>,
+    pub volume: f32,
+}
+
 pub struct Sounds {
     pub wind: Handle<AudioSource>,
+    /// The intro speech (normalised louder in convert_assets.sh).
     pub darkness: Handle<AudioSource>,
-    pub lightning: Handle<AudioSource>,
-    pub chant: Handle<AudioSource>,
-    pub arrow: Handle<AudioSource>,
-    pub knife: Handle<AudioSource>,
-    pub throw: Handle<AudioSource>,
-    pub scream: Handle<AudioSource>,
-    pub bone: Handle<AudioSource>,
-    pub grunt: Handle<AudioSource>,
-    pub sword: Handle<AudioSource>,
-    pub yell: Handle<AudioSource>,
+    pub lightning: Sfx,
+    pub chant: Sfx,
+    pub arrow: Sfx,
+    pub knife: Sfx,
+    pub throw: Sfx,
+    pub scream: Sfx,
+    pub bone: Sfx,
+    pub grunt: Sfx,
+    pub sword: Sfx,
+    pub yell: Sfx,
 }
 
 #[derive(Resource)]
@@ -105,6 +114,7 @@ fn load(mut commands: Commands, asset_server: Res<AssetServer>, mut graphs: ResM
         range.map(|i| asset_server.load(format!("textures/{dir}/{i:02}.png"))).collect()
     };
     let sound = |name: &str| asset_server.load(format!("sounds/{name}"));
+    let sfx = |name: &str, volume: f32| Sfx { handle: asset_server.load(format!("sounds/{name}")), volume };
 
     commands.insert_resource(GameAssets {
         level1: asset_server.load("models/level1.glb"),
@@ -137,16 +147,18 @@ fn load(mut commands: Commands, asset_server: Res<AssetServer>, mut graphs: ResM
         sounds: Sounds {
             wind: sound("wind.ogg"),
             darkness: sound("darkness.ogg"),
-            lightning: sound("lightning.wav"),
-            chant: sound("chant.wav"),
-            arrow: sound("arrow.wav"),
-            knife: sound("knife.wav"),
-            throw: sound("throw.wav"),
-            scream: sound("scream.wav"),
-            bone: sound("bone.wav"),
-            grunt: sound("grunt.wav"),
-            sword: sound("sword.wav"),
-            yell: sound("yell.wav"),
+            // Volumes from measured loudness (LUFS in brackets), aiming for
+            // roughly -24 LUFS so they sit just above the wind.
+            lightning: sfx("lightning.wav", 0.35), // -13
+            chant: sfx("chant.wav", 0.3),          // -10
+            arrow: sfx("arrow.wav", 0.8),          // -24
+            knife: sfx("knife.wav", 0.3),          // -14
+            throw: sfx("throw.wav", 0.35),         // short, peaks at 0 dBFS
+            scream: sfx("scream.wav", 0.3),        // -12
+            bone: sfx("bone.wav", 0.7),            // -25
+            grunt: sfx("grunt.wav", 0.35),         // short, peaks at 0 dBFS
+            sword: sfx("sword.wav", 0.45),         // -18
+            yell: sfx("yell.wav", 0.25),           // -9
         },
     });
 }
@@ -157,7 +169,10 @@ fn finish_loading(library: Option<Res<LevelLibrary>>, mut next: ResMut<NextState
     }
 }
 
-/// Plays a one-shot sound (`play sound n`).
-pub fn play(commands: &mut Commands, sound: &Handle<AudioSource>) {
-    commands.spawn((AudioPlayer::new(sound.clone()), PlaybackSettings::DESPAWN));
+/// Plays a one-shot sound effect (`play sound n`).
+pub fn play(commands: &mut Commands, sound: &Sfx) {
+    commands.spawn((
+        AudioPlayer::new(sound.handle.clone()),
+        PlaybackSettings::DESPAWN.with_volume(bevy::audio::Volume::new(sound.volume)),
+    ));
 }

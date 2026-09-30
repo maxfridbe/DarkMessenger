@@ -66,7 +66,10 @@ cp  "$SRC/cast.png"             "$OUT/ui/health_frame.png"
 echo "Converting sounds..."
 ogg() { ffmpeg -loglevel error -y -i "$1" -c:a libvorbis -q:a 3 "$2"; }
 ogg "$SRC/Blowing wind.wav" "$OUT/sounds/wind.ogg"
-ogg "$SRC/darkness.wav"     "$OUT/sounds/darkness.ogg"
+# The intro speech is quiet against the rest: normalise it to -11 LUFS
+# with a narrow loudness range so the quiet lines come up.
+ffmpeg -loglevel error -y -i "$SRC/darkness.wav" -af "loudnorm=I=-11:TP=-1:LRA=6" -ar 44100 \
+    -c:a libvorbis -q:a 3 "$OUT/sounds/darkness.ogg"
 sfx() { ffmpeg -loglevel error -y -i "$1" -c:a pcm_s16le "$2"; }
 sfx "$SRC/CustomLightning1.wav" "$OUT/sounds/lightning.wav"
 sfx "$SRC/Chanttone.wav"        "$OUT/sounds/chant.wav"
